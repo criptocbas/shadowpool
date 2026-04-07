@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+:root {
+  --bg-deep: oklch(0.11 0.01 260);
+  --bg-surface: oklch(0.14 0.012 260);
+  --bg-raised: oklch(0.17 0.014 260);
+  --bg-hover: oklch(0.20 0.016 260);
+
+  --text-primary: oklch(0.93 0.01 260);
+  --text-secondary: oklch(0.65 0.01 260);
+  --text-tertiary: oklch(0.45 0.01 260);
+
+  --border-subtle: oklch(0.22 0.01 260);
+  --border-medium: oklch(0.30 0.012 260);
+
+  --accent-encrypted: oklch(0.55 0.12 200);
+  --accent-encrypted-dim: oklch(0.35 0.08 200);
+  --accent-revealed: oklch(0.72 0.15 155);
+  --accent-revealed-dim: oklch(0.45 0.08 155);
+  --accent-warning: oklch(0.75 0.15 60);
+  --accent-danger: oklch(0.65 0.18 25);
+
+  --font-display: "Geist", system-ui, sans-serif;
+  --font-body: "Geist", system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+}
+
+@theme inline {
+  --color-background: var(--bg-deep);
+  --color-foreground: var(--text-primary);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-medium) transparent;
+}
+
+body {
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Encrypted hex shimmer */
+@keyframes cipher-drift {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+.cipher-shimmer {
+  animation: cipher-drift 3s ease-in-out infinite;
+}
+
+.cipher-shimmer:nth-child(2) { animation-delay: 0.4s; }
+.cipher-shimmer:nth-child(3) { animation-delay: 0.8s; }
+.cipher-shimmer:nth-child(4) { animation-delay: 1.2s; }
+.cipher-shimmer:nth-child(5) { animation-delay: 1.6s; }
+
+/* Quote reveal pulse */
+@keyframes quote-pulse {
+  0% { opacity: 0.6; transform: translateY(2px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.quote-reveal {
+  animation: quote-pulse 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Stagger entrance */
+@keyframes enter-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.stagger-enter {
+  animation: enter-up 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
+
+.stagger-enter:nth-child(1) { animation-delay: 0.05s; }
+.stagger-enter:nth-child(2) { animation-delay: 0.1s; }
+.stagger-enter:nth-child(3) { animation-delay: 0.15s; }
+.stagger-enter:nth-child(4) { animation-delay: 0.2s; }
+.stagger-enter:nth-child(5) { animation-delay: 0.25s; }
+.stagger-enter:nth-child(6) { animation-delay: 0.3s; }
+
+/* Selection */
+::selection {
+  background: oklch(0.55 0.12 200 / 0.3);
+  color: var(--text-primary);
+}
