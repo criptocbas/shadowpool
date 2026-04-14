@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import { WalletProvider } from "@/providers/WalletProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -13,9 +14,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ShadowPool — Confidential Market-Making Vaults",
+  title: "ShadowPool — Confidential Execution Layer for Solana",
   description:
-    "Dark pool liquidity vaults on Solana. Your strategy stays encrypted via Arcium MPC. Your yield stays yours.",
+    "The dark-pool execution layer for Solana. Encrypted strategy, public execution, selective disclosure for auditors. Built on Arcium MPC.",
 };
 
 export default function RootLayout({
@@ -29,7 +30,9 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full`}
       style={{ colorScheme: "dark" }}
     >
-      <body className="min-h-full">{children}</body>
+      <body className="min-h-full">
+        <WalletProvider>{children}</WalletProvider>
+      </body>
     </html>
   );
 }

@@ -1,9 +1,14 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+import { useVault, useQuotes } from "@/hooks";
 
-// ─── Simulated Data (replace with on-chain reads) ─────────────────────
+// ─── Demo-state fallback (shown before wallet connects) ────────────────
+// When a wallet is connected and a vault exists, the dashboard renders
+// real on-chain data instead. See `v` derivation in VaultDashboard below.
 const MOCK_VAULT = {
   pair: "SOL / USDC",
   tvl: 1_250_000,
@@ -146,7 +151,71 @@ export default function VaultDashboard() {
   const [activeTab, setActiveTab] = useState<"deposit" | "withdraw">("deposit");
   useEffect(() => setMounted(true), []);
 
-  const v = MOCK_VAULT;
+  // Real on-chain data — vault fetched for the connected wallet, quotes
+  // streamed via program event listener.
+  const { publicKey, connected } = useWallet();
+  const { vault, loading: vaultLoading } = useVault(publicKey ?? null);
+  const { quotes } = useQuotes();
+
+  // Derive the display model `v`. When on-chain data exists we use it;
+  // otherwise we fall back to MOCK_VAULT so the page still renders as a
+  // compelling demo before a wallet is connected.
+  const v = useMemo(() => {
+    if (!vault) return MOCK_VAULT;
+
+    const toNum = (val: unknown): number => {
+      if (val === null || val === undefined) return 0;
+      const anyVal = val as { toNumber?: () => number; toString?: () => string };
+      if (typeof anyVal.toNumber === "function") {
+        try { return anyVal.toNumber(); } catch { /* bignum overflow */ }
+      }
+      const s = anyVal.toString?.() ?? String(val);
+      const n = Number(s);
+      return Number.isFinite(n) ? n : 0;
+    };
+
+    // Prefer the live quote stream; fall back to the last persisted on-chain
+    // quotes so the dashboard stays populated across page refreshes.
+    const hasLiveQuotes = quotes != null;
+    const bidPrice6 = hasLiveQuotes ? toNum(quotes.bidPrice) : toNum(vault.lastBidPrice);
+    const askPrice6 = hasLiveQuotes ? toNum(quotes.askPrice) : toNum(vault.lastAskPrice);
+    const bidSize9  = hasLiveQuotes ? toNum(quotes.bidSize)  : toNum(vault.lastBidSize);
+    const askSize9  = hasLiveQuotes ? toNum(quotes.askSize)  : toNum(vault.lastAskSize);
+    const rebalanceFlag = hasLiveQuotes
+      ? quotes.shouldRebalance !== 0
+      : vault.lastShouldRebalance !== 0;
+
+    // Convert raw on-chain units to display units.
+    // tokenB (quote) uses 6 decimals; tokenA (base) uses 9 decimals.
+    // Quote prices are scaled by 1e6 (micro-USDC); sizes by 1e9 (lamports).
+    const tvlUsdc = toNum(vault.totalDepositsB) / 1e6;
+
+    const ciphertextHex = vault.encryptedState.map(
+      (ct: number[]) => Buffer.from(ct).toString("hex").slice(0, 32)
+    );
+
+    return {
+      pair: "SOL / USDC",
+      tvl: tvlUsdc,
+      apy: MOCK_VAULT.apy,                    // TODO: compute from reveal_performance history
+      sharePrice: MOCK_VAULT.sharePrice,      // TODO: total_deposits_b / total_shares
+      totalShares: toNum(vault.totalShares),
+      lastRebalance: MOCK_VAULT.lastRebalance,// TODO: slot delta from vault.quotesSlot
+      encryptedState: ciphertextHex.length === 5 ? ciphertextHex : MOCK_VAULT.encryptedState,
+      quotes: {
+        bidPrice: bidPrice6 / 1e6,
+        bidSize: bidSize9 / 1e9,
+        askPrice: askPrice6 / 1e6,
+        askSize: askSize9 / 1e9,
+        shouldRebalance: rebalanceFlag,
+        oraclePrice: MOCK_VAULT.quotes.oraclePrice, // TODO: pipe Pyth feed
+        timestamp: hasLiveQuotes ? quotes.receivedAt : Date.now(),
+      },
+      rebalanceHistory: MOCK_VAULT.rebalanceHistory, // TODO: derive from program events
+    };
+  }, [vault, quotes]);
+
+  const isDemoMode = !connected || !vault;
 
   return (
     <div className="min-h-screen" style={{ background: "var(--bg-deep)" }}>
@@ -173,22 +242,47 @@ export default function VaultDashboard() {
           >
             <div
               className="w-1.5 h-1.5 rounded-full"
-              style={{ background: "var(--accent-revealed)" }}
+              style={{
+                background: connected
+                  ? "var(--accent-revealed)"
+                  : "var(--accent-warning)",
+              }}
             />
             Devnet
           </div>
-          <button
-            className="text-sm px-4 py-1.5 rounded transition-colors"
-            style={{
-              background: "var(--bg-raised)",
-              border: "1px solid var(--border-medium)",
-              color: "var(--text-primary)",
-            }}
-          >
-            Connect Wallet
-          </button>
+          <WalletMultiButton />
         </div>
       </header>
+
+      {/* Demo-mode banner — shown until a wallet is connected and a vault exists */}
+      {isDemoMode && (
+        <div
+          className="px-6 md:px-10 py-2 text-xs font-mono flex items-center gap-2"
+          style={{
+            background: "var(--bg-surface)",
+            color: "var(--text-tertiary)",
+            borderBottom: "1px solid var(--border-subtle)",
+          }}
+        >
+          <span
+            className="text-[10px] tracking-[0.2em] uppercase px-2 py-0.5 rounded"
+            style={{
+              background: "var(--bg-raised)",
+              color: "var(--accent-encrypted)",
+              border: "1px solid var(--border-medium)",
+            }}
+          >
+            Demo
+          </span>
+          <span>
+            {!connected
+              ? "Showing illustrative vault state. Connect a wallet to see your live on-chain vault."
+              : vaultLoading
+                ? "Loading on-chain vault state…"
+                : "No vault found for this wallet. Initialize one via the CLI or create-vault flow to see live data."}
+          </span>
+        </div>
+      )}
 
       <div
         className={`transition-all duration-500 ${
@@ -209,7 +303,7 @@ export default function VaultDashboard() {
             </span>
           </div>
           <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>
-            Confidential market-making vault &middot; Arcium MPC
+            Reference vault for the confidential execution layer &middot; Arcium MPC
           </p>
         </div>
 

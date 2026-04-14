@@ -340,7 +340,7 @@ export default function LandingPage() {
                 className="text-xs tracking-[0.2em] uppercase mb-6"
                 style={{ color: "var(--accent-encrypted)" }}
               >
-                Confidential liquidity on Solana
+                Confidential execution layer for Solana
               </p>
 
               <h1
@@ -353,7 +353,7 @@ export default function LandingPage() {
                   encrypted.
                 </span>
                 <br />
-                Your yield stays
+                Your execution stays
                 <br />
                 <span style={{ color: "var(--accent-revealed)" }}>yours.</span>
               </h1>
@@ -362,9 +362,10 @@ export default function LandingPage() {
                 className="mt-8 text-[clamp(0.9rem,1.5vw,1.05rem)] leading-relaxed max-w-md"
                 style={{ color: "var(--text-secondary)" }}
               >
-                ShadowPool vaults compute market-making quotes from encrypted
-                strategy parameters via Arcium MPC. MEV bots see the trade —
-                never the logic behind it.
+                The dark-pool execution layer for Solana. Strategy stays
+                encrypted inside Arcium&rsquo;s MPC network; only the resulting
+                quotes are revealed on-chain. Institutions trade without
+                broadcasting their hand to every bot in the mempool.
               </p>
 
               <div className="flex items-center gap-4 mt-10">
@@ -538,7 +539,7 @@ export default function LandingPage() {
             className="text-[clamp(1.25rem,3vw,1.75rem)] font-light tracking-tight mb-8"
             style={{ color: "var(--text-primary)" }}
           >
-            Stop leaking yield to{" "}
+            Stop broadcasting your strategy to{" "}
             <span style={{ color: "var(--accent-danger)" }}>MEV bots</span>.
           </h2>
 

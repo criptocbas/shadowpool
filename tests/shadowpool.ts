@@ -1,6 +1,11 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
+import {
+  createMint,
+  getOrCreateAssociatedTokenAccount,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
 import { Shadowpool } from "../target/types/shadowpool";
 import { randomBytes } from "crypto";
 import {
@@ -74,22 +79,81 @@ describe("ShadowPool", () => {
   let vaultPda: PublicKey;
   let vaultBump: number;
 
-  // Mock token accounts (for MVP — real SPL tokens come later)
-  const tokenAMint = Keypair.generate().publicKey;
-  const tokenBMint = Keypair.generate().publicKey;
-  const tokenAVault = Keypair.generate().publicKey;
-  const tokenBVault = Keypair.generate().publicKey;
-  const shareMint = Keypair.generate().publicKey;
+  // Real SPL token fixtures — populated in before()
+  let tokenAMint: PublicKey;      // base (SOL-like, 9 decimals)
+  let tokenBMint: PublicKey;      // quote (USDC-like, 6 decimals)
+  let tokenAVault: PublicKey;     // vault PDA's ATA for tokenA
+  let tokenBVault: PublicKey;     // vault PDA's ATA for tokenB
+  let shareMint: PublicKey;       // spToken mint with vault PDA as mint authority
 
   before(async () => {
     owner = readKpJson(`${os.homedir()}/.config/solana/id.json`);
 
-    // Derive vault PDA
+    // Derive vault PDA (account doesn't exist yet, only the address)
     [vaultPda, vaultBump] = PublicKey.findProgramAddressSync(
       [Buffer.from("vault"), owner.publicKey.toBuffer()],
       program.programId
     );
     console.log("Vault PDA:", vaultPda.toBase58());
+
+    // ---- Create SPL token fixtures ------------------------------------
+    // The InitializeVault context requires:
+    //   - token_a_mint / token_b_mint: valid Mints
+    //   - token_a_vault / token_b_vault: TokenAccounts owned by vault PDA
+    //   - share_mint: Mint with mint_authority = vault PDA and supply = 0
+    //
+    // The vault PDA doesn't need to exist as an account yet — we can derive
+    // its address and set it as owner/authority ahead of initialize_vault.
+    console.log("\n=== Creating SPL token fixtures ===");
+
+    tokenAMint = await createMint(
+      provider.connection,
+      owner,               // payer + signer
+      owner.publicKey,     // mint authority (mocks an external token)
+      null,                // no freeze authority
+      9                    // base token decimals (SOL-like)
+    );
+    console.log("tokenAMint (base):", tokenAMint.toBase58());
+
+    tokenBMint = await createMint(
+      provider.connection,
+      owner,
+      owner.publicKey,
+      null,
+      6                    // quote token decimals (USDC-like)
+    );
+    console.log("tokenBMint (quote):", tokenBMint.toBase58());
+
+    // Share mint: authority MUST be vault PDA so the program can mint spTokens
+    shareMint = await createMint(
+      provider.connection,
+      owner,
+      vaultPda,            // mint authority = vault PDA (required by constraint)
+      null,
+      9
+    );
+    console.log("shareMint (spTokens):", shareMint.toBase58());
+
+    // Vault ATAs — owned by vault PDA (allowOwnerOffCurve = true)
+    const tokenAVaultAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      owner,
+      tokenAMint,
+      vaultPda,
+      true                 // allowOwnerOffCurve — required for PDA owners
+    );
+    tokenAVault = tokenAVaultAta.address;
+    console.log("tokenAVault (ATA):", tokenAVault.toBase58());
+
+    const tokenBVaultAta = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      owner,
+      tokenBMint,
+      vaultPda,
+      true
+    );
+    tokenBVault = tokenBVaultAta.address;
+    console.log("tokenBVault (ATA):", tokenBVault.toBase58());
 
     // Get MXE public key (with retry for node startup)
     mxePublicKey = await getMXEPublicKeyWithRetry(provider, program.programId);
@@ -111,7 +175,7 @@ describe("ShadowPool", () => {
 
     const sig = await program.methods
       .initializeVault()
-      .accounts({
+      .accountsPartial({
         authority: owner.publicKey,
         vault: vaultPda,
         tokenAMint,
@@ -119,6 +183,7 @@ describe("ShadowPool", () => {
         tokenAVault,
         tokenBVault,
         shareMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
       .signers([owner])
