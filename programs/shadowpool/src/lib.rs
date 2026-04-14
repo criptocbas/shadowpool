@@ -683,6 +683,15 @@ pub mod shadowpool {
         ctx: Context<ExecuteRebalance>,
         max_slippage_bps: u16,
     ) -> Result<()> {
+        // Cap slippage to 5% so a malicious or buggy cranker cannot quietly
+        // pass 100% and nullify the slippage protection. Institutional MM
+        // strategies rarely need >2% tolerance; 5% is the safety ceiling.
+        const MAX_ALLOWED_SLIPPAGE_BPS: u16 = 500;
+        require!(
+            max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS,
+            ErrorCode::SlippageTooHigh
+        );
+
         let vault = &ctx.accounts.vault;
 
         // Validate quotes exist and haven't been used
@@ -1442,4 +1451,6 @@ pub enum ErrorCode {
     RebalanceNotNeeded,
     #[msg("NAV is stale after rebalance — call reveal_performance to refresh")]
     NavStale,
+    #[msg("Slippage tolerance exceeds the 5% ceiling")]
+    SlippageTooHigh,
 }
