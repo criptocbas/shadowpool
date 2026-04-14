@@ -3,12 +3,12 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useWallet } from "@solana/wallet-adapter-react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import {
   getAssociatedTokenAddress,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { useVault, useQuotes, useDeposit, useWithdraw } from "@/hooks";
+import { ConnectButton } from "@/components/ConnectButton";
 
 // USDC (quote) has 6 decimals on Solana. Share tokens are minted with 9.
 const QUOTE_DECIMALS = 6;
@@ -337,7 +337,7 @@ export default function VaultDashboard() {
             />
             Devnet
           </div>
-          <WalletMultiButton />
+          <ConnectButton />
         </div>
       </header>
 
