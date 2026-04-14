@@ -551,6 +551,12 @@ pub mod shadowpool {
             shares_to_mint,
         )?;
 
+        // Reload vault_token_b so any subsequent code that reads its amount
+        // sees the post-transfer value rather than the pre-CPI snapshot.
+        // No-op for the current state-update logic but required as soon as
+        // execute_rebalance integrates a real DEX CPI.
+        ctx.accounts.vault_token_b.reload()?;
+
         // Update vault state
         let vault = &mut ctx.accounts.vault;
         vault.total_shares = vault.total_shares.checked_add(shares_to_mint).ok_or(ErrorCode::MathOverflow)?;
@@ -612,11 +618,16 @@ pub mod shadowpool {
         .map_err(|_| ErrorCode::MathOverflow)?;
 
         require!(amount_out > 0, ErrorCode::InvalidAmount);
-        // Defence-in-depth: a NAV-based withdrawal can exceed on-hand quote
-        // if the vault is holding value primarily in base tokens post-trade.
-        // Without a DEX CPI to liquidate, cap to available quote balance.
-        // Post-CPI integration, this can be relaxed or replaced by partial
-        // fills in base + quote.
+        // Solvency check: total_deposits_b is a bookkeeping counter that can
+        // drift from the on-chain SPL balance once DEX CPIs land. Check the
+        // REAL vault_token_b.amount as the authoritative gate so we never
+        // attempt an SPL transfer larger than the vault actually holds.
+        // Also keep the bookkeeping check as defence-in-depth — they should
+        // agree pre-CPI; a divergence is a bug worth surfacing.
+        require!(
+            ctx.accounts.vault_token_b.amount >= amount_out,
+            ErrorCode::InsufficientBalance
+        );
         require!(
             amount_out <= ctx.accounts.vault.total_deposits_b,
             ErrorCode::InsufficientBalance
@@ -649,6 +660,10 @@ pub mod shadowpool {
             ),
             amount_out,
         )?;
+
+        // Reload after CPI so the post-transfer balance is visible to any
+        // downstream logic (relevant once DEX CPI integration adds reads).
+        ctx.accounts.vault_token_b.reload()?;
 
         // Update vault state
         let vault = &mut ctx.accounts.vault;
