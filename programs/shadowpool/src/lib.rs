@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo, Transfer, Burn};
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
@@ -77,6 +78,13 @@ pub mod shadowpool {
         vault.last_rebalance_slot = 0;
         vault.state_nonce = 0;
         vault.encrypted_state = [[0u8; 32]; 5];
+        vault.last_bid_price = 0;
+        vault.last_bid_size = 0;
+        vault.last_ask_price = 0;
+        vault.last_ask_size = 0;
+        vault.last_should_rebalance = 0;
+        vault.quotes_slot = 0;
+        vault.quotes_consumed = true;
 
         emit!(VaultCreatedEvent {
             vault: vault.key(),
@@ -216,18 +224,27 @@ pub mod shadowpool {
         };
 
         let vault = &mut ctx.accounts.vault;
-        vault.last_rebalance_slot = Clock::get()?.slot;
+        let slot = Clock::get()?.slot;
+        vault.last_rebalance_slot = slot;
 
-        // Emit PLAINTEXT quotes for the cranker to use for DEX execution.
+        // Persist revealed quotes on-chain so execute_rebalance can read them
+        vault.last_bid_price = o.field_0;
+        vault.last_bid_size = o.field_1;
+        vault.last_ask_price = o.field_2;
+        vault.last_ask_size = o.field_3;
+        vault.last_should_rebalance = o.field_4 as u8;
+        vault.quotes_slot = slot;
+        vault.quotes_consumed = false;
+
+        // Emit PLAINTEXT quotes for the cranker / frontend.
         // The strategy that PRODUCED these quotes remains encrypted on-chain.
-        // Note: revealed output fields are nested as field_0.field_0, field_0.field_1, etc.
         emit!(QuotesComputedEvent {
             vault: vault.key(),
-            bid_price: o.field_0,       // bid_price
-            bid_size: o.field_1,        // bid_size
-            ask_price: o.field_2,       // ask_price
-            ask_size: o.field_3,        // ask_size
-            should_rebalance: o.field_4 as u8, // should_rebalance
+            bid_price: o.field_0,
+            bid_size: o.field_1,
+            ask_price: o.field_2,
+            ask_size: o.field_3,
+            should_rebalance: o.field_4 as u8,
         });
         Ok(())
     }
@@ -443,46 +460,207 @@ pub mod shadowpool {
     }
 
     // ==========================================================
-    // DEPOSIT — user deposits tokens into vault
+    // DEPOSIT — user deposits quote token (USDC) into vault
     // ==========================================================
 
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
-        // Transfer USDC from user to vault
-        let cpi_ctx = CpiContext::new(
-            ctx.accounts.token_program.to_account_info(),
-            anchor_lang::system_program::Transfer {
-                from: ctx.accounts.user_token_account.to_account_info(),
-                to: ctx.accounts.vault_token_account.to_account_info(),
-            },
-        );
-        // Note: For SPL tokens, use token::transfer instead of system_program::transfer
-        // This will be properly implemented with anchor_spl::token
+        // Extract signer seeds before any mutable borrow
+        let authority_key = ctx.accounts.vault.authority;
+        let bump = ctx.accounts.vault.bump;
+        let vault_key = ctx.accounts.vault.key();
 
-        // Calculate shares
-        let vault = &mut ctx.accounts.vault;
-        let shares_to_mint = if vault.total_shares == 0 {
-            amount // First deposit: 1:1 ratio
+        // Calculate shares: first deposit is 1:1, subsequent are pro-rata
+        let shares_to_mint = if ctx.accounts.vault.total_shares == 0 {
+            amount
         } else {
             amount
-                .checked_mul(vault.total_shares)
-                .unwrap()
-                .checked_div(vault.total_deposits_b)
-                .unwrap()
+                .checked_mul(ctx.accounts.vault.total_shares)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(ctx.accounts.vault.total_deposits_b)
+                .ok_or(ErrorCode::MathOverflow)?
         };
 
-        vault.total_shares = vault.total_shares.checked_add(shares_to_mint).unwrap();
-        vault.total_deposits_b = vault.total_deposits_b.checked_add(amount).unwrap();
+        // Transfer quote tokens from user to vault
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.user_token_account.to_account_info(),
+                    to: ctx.accounts.vault_token_b.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            amount,
+        )?;
 
-        // TODO: Mint spTokens to user via share_mint (vault PDA signs as mint authority)
-        // anchor_spl::token::mint_to(cpi_ctx_mint, shares_to_mint)?;
+        // Mint share tokens (spTokens) to user — vault PDA is the mint authority
+        let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
+        token::mint_to(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                MintTo {
+                    mint: ctx.accounts.share_mint.to_account_info(),
+                    to: ctx.accounts.user_share_account.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            shares_to_mint,
+        )?;
+
+        // Update vault state
+        let vault = &mut ctx.accounts.vault;
+        vault.total_shares = vault.total_shares.checked_add(shares_to_mint).ok_or(ErrorCode::MathOverflow)?;
+        vault.total_deposits_b = vault.total_deposits_b.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
 
         emit!(DepositEvent {
-            vault: vault.key(),
+            vault: vault_key,
             user: ctx.accounts.user.key(),
             amount,
             shares_minted: shares_to_mint,
+        });
+        Ok(())
+    }
+
+    // ==========================================================
+    // WITHDRAW — user burns share tokens and receives quote token
+    // ==========================================================
+
+    pub fn withdraw(ctx: Context<Withdraw>, shares: u64) -> Result<()> {
+        require!(shares > 0, ErrorCode::InvalidAmount);
+        require!(ctx.accounts.vault.total_shares > 0, ErrorCode::InsufficientBalance);
+
+        // Extract values before mutable borrow
+        let authority_key = ctx.accounts.vault.authority;
+        let bump = ctx.accounts.vault.bump;
+        let vault_key = ctx.accounts.vault.key();
+
+        // Calculate quote tokens to return: shares / total_shares * total_deposits_b
+        let amount_out = (shares as u128)
+            .checked_mul(ctx.accounts.vault.total_deposits_b as u128)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(ctx.accounts.vault.total_shares as u128)
+            .ok_or(ErrorCode::MathOverflow)? as u64;
+
+        require!(amount_out > 0, ErrorCode::InvalidAmount);
+
+        // Burn user's share tokens
+        token::burn(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Burn {
+                    mint: ctx.accounts.share_mint.to_account_info(),
+                    from: ctx.accounts.user_share_account.to_account_info(),
+                    authority: ctx.accounts.user.to_account_info(),
+                },
+            ),
+            shares,
+        )?;
+
+        // Transfer quote tokens from vault to user — vault PDA signs
+        let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_token_b.to_account_info(),
+                    to: ctx.accounts.user_token_account.to_account_info(),
+                    authority: ctx.accounts.vault.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount_out,
+        )?;
+
+        // Update vault state
+        let vault = &mut ctx.accounts.vault;
+        vault.total_shares = vault.total_shares.checked_sub(shares).ok_or(ErrorCode::MathOverflow)?;
+        vault.total_deposits_b = vault.total_deposits_b.checked_sub(amount_out).ok_or(ErrorCode::MathOverflow)?;
+
+        emit!(WithdrawEvent {
+            vault: vault_key,
+            user: ctx.accounts.user.key(),
+            shares_burned: shares,
+            amount_out,
+        });
+        Ok(())
+    }
+
+    // ==========================================================
+    // EXECUTE REBALANCE — read persisted quotes, CPI into DEX
+    // ==========================================================
+    // Called by a cranker after compute_quotes writes fresh quotes.
+    // Currently a skeleton: validates quotes, emits event, marks consumed.
+    // DEX CPI (Meteora DLMM) will be added in the integration pass.
+
+    pub fn execute_rebalance(
+        ctx: Context<ExecuteRebalance>,
+        max_slippage_bps: u16,
+    ) -> Result<()> {
+        let vault = &ctx.accounts.vault;
+
+        // Validate quotes exist and haven't been used
+        require!(!vault.quotes_consumed, ErrorCode::QuotesAlreadyConsumed);
+        require!(vault.quotes_slot > 0, ErrorCode::NoQuotesAvailable);
+
+        // Staleness check: quotes must be from within the last 150 slots (~1 minute)
+        let current_slot = Clock::get()?.slot;
+        let age = current_slot.saturating_sub(vault.quotes_slot);
+        require!(age <= 150, ErrorCode::QuotesStale);
+
+        // Read the persisted quotes
+        let bid_price = vault.last_bid_price;
+        let bid_size = vault.last_bid_size;
+        let ask_price = vault.last_ask_price;
+        let ask_size = vault.last_ask_size;
+        let should_rebalance = vault.last_should_rebalance;
+
+        // Only rebalance if the MPC computation says so
+        require!(should_rebalance == 1, ErrorCode::RebalanceNotNeeded);
+
+        // Compute slippage bounds for DEX execution
+        let bid_min_out = bid_size
+            .checked_mul((10_000u64).checked_sub(max_slippage_bps as u64).ok_or(ErrorCode::MathOverflow)?)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(ErrorCode::MathOverflow)?;
+        let ask_min_out = ask_size
+            .checked_mul((10_000u64).checked_sub(max_slippage_bps as u64).ok_or(ErrorCode::MathOverflow)?)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        // ── DEX CPI PLACEHOLDER ──────────────────────────────────
+        // Meteora DLMM integration goes here. The vault PDA signs:
+        //   let signer_seeds = &[b"vault", authority.as_ref(), &[bump]];
+        //
+        // Two possible approaches:
+        //   1. Swap: CPI into dlmm::cpi::swap() with bid/ask amounts
+        //   2. LP:   CPI into dlmm::cpi::add_liquidity_by_strategy()
+        //            with bid/ask converted to a bin range
+        //
+        // After CPI, read actual token deltas and pass to update_balances.
+        // ─────────────────────────────────────────────────────────
+
+        msg!(
+            "execute_rebalance: bid={}@{} ask={}@{} slippage={}bps min_bid_out={} min_ask_out={}",
+            bid_size, bid_price, ask_size, ask_price,
+            max_slippage_bps, bid_min_out, ask_min_out,
+        );
+
+        // Mark quotes as consumed so they can't be replayed
+        let vault = &mut ctx.accounts.vault;
+        vault.quotes_consumed = true;
+
+        emit!(RebalanceExecutedEvent {
+            vault: vault.key(),
+            bid_price,
+            bid_size,
+            ask_price,
+            ask_size,
+            slot: current_slot,
         });
         Ok(())
     }
@@ -508,6 +686,14 @@ pub struct Vault {
     pub last_rebalance_slot: u64,
     pub state_nonce: u128,
     pub encrypted_state: [[u8; 32]; 5],
+    // --- Quote persistence (AFTER encrypted_state to preserve ENCRYPTED_STATE_OFFSET) ---
+    pub last_bid_price: u64,
+    pub last_bid_size: u64,
+    pub last_ask_price: u64,
+    pub last_ask_size: u64,
+    pub last_should_rebalance: u8,
+    pub quotes_slot: u64,        // Slot when quotes were computed (staleness check)
+    pub quotes_consumed: bool,   // True after execute_rebalance uses the quotes
 }
 
 // ==============================================================
@@ -932,16 +1118,24 @@ pub struct InitializeVault<'info> {
         bump,
     )]
     pub vault: Box<Account<'info, Vault>>,
-    /// CHECK: token mint A
-    pub token_a_mint: AccountInfo<'info>,
-    /// CHECK: token mint B
-    pub token_b_mint: AccountInfo<'info>,
-    /// CHECK: vault ATA for token A (will be created separately)
-    pub token_a_vault: AccountInfo<'info>,
-    /// CHECK: vault ATA for token B
-    pub token_b_vault: AccountInfo<'info>,
-    /// CHECK: share mint (will be created separately)
-    pub share_mint: AccountInfo<'info>,
+    pub token_a_mint: Account<'info, Mint>,
+    pub token_b_mint: Account<'info, Mint>,
+    #[account(
+        constraint = token_a_vault.mint == token_a_mint.key() @ ErrorCode::MintMismatch,
+        constraint = token_a_vault.owner == vault.key() @ ErrorCode::VaultOwnerMismatch,
+    )]
+    pub token_a_vault: Account<'info, TokenAccount>,
+    #[account(
+        constraint = token_b_vault.mint == token_b_mint.key() @ ErrorCode::MintMismatch,
+        constraint = token_b_vault.owner == vault.key() @ ErrorCode::VaultOwnerMismatch,
+    )]
+    pub token_b_vault: Account<'info, TokenAccount>,
+    #[account(
+        constraint = share_mint.mint_authority.contains(&vault.key()) @ ErrorCode::VaultOwnerMismatch,
+        constraint = share_mint.supply == 0 @ ErrorCode::InvalidAmount,
+    )]
+    pub share_mint: Account<'info, Mint>,
+    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
@@ -949,16 +1143,99 @@ pub struct InitializeVault<'info> {
 pub struct Deposit<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Box<Account<'info, Vault>>,
-    /// CHECK: user's token account
+    #[account(
+        mut,
+        constraint = user_token_account.mint == vault.token_b_mint @ ErrorCode::MintMismatch,
+        constraint = user_token_account.owner == user.key() @ ErrorCode::Unauthorized,
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
+    )]
+    pub vault_token_b: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        address = vault.share_mint @ ErrorCode::MintMismatch,
+    )]
+    pub share_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        constraint = user_share_account.mint == vault.share_mint @ ErrorCode::MintMismatch,
+        constraint = user_share_account.owner == user.key() @ ErrorCode::Unauthorized,
+    )]
+    pub user_share_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct Withdraw<'info> {
     #[account(mut)]
-    pub user_token_account: AccountInfo<'info>,
-    /// CHECK: vault's token account
+    pub user: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(
+        mut,
+        constraint = user_token_account.mint == vault.token_b_mint @ ErrorCode::MintMismatch,
+        constraint = user_token_account.owner == user.key() @ ErrorCode::Unauthorized,
+    )]
+    pub user_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
+    )]
+    pub vault_token_b: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        address = vault.share_mint @ ErrorCode::MintMismatch,
+    )]
+    pub share_mint: Account<'info, Mint>,
+    #[account(
+        mut,
+        constraint = user_share_account.mint == vault.share_mint @ ErrorCode::MintMismatch,
+        constraint = user_share_account.owner == user.key() @ ErrorCode::Unauthorized,
+    )]
+    pub user_share_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteRebalance<'info> {
     #[account(mut)]
-    pub vault_token_account: AccountInfo<'info>,
-    /// CHECK: token program
-    pub token_program: AccountInfo<'info>,
+    pub cranker: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+    #[account(
+        mut,
+        address = vault.token_a_vault @ ErrorCode::VaultOwnerMismatch,
+    )]
+    pub vault_token_a: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
+    )]
+    pub vault_token_b: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    // --- Meteora DLMM accounts will be added here ---
+    // pub dlmm_program: ...
+    // pub lb_pair: ...
+    // pub bin_array_lower: ...
+    // pub bin_array_upper: ...
+    // etc.
 }
 
 // ==============================================================
@@ -1012,6 +1289,24 @@ pub struct DepositEvent {
     pub shares_minted: u64,
 }
 
+#[event]
+pub struct WithdrawEvent {
+    pub vault: Pubkey,
+    pub user: Pubkey,
+    pub shares_burned: u64,
+    pub amount_out: u64,
+}
+
+#[event]
+pub struct RebalanceExecutedEvent {
+    pub vault: Pubkey,
+    pub bid_price: u64,
+    pub bid_size: u64,
+    pub ask_price: u64,
+    pub ask_size: u64,
+    pub slot: u64,
+}
+
 // ==============================================================
 // ERROR CODES
 // ==============================================================
@@ -1028,4 +1323,20 @@ pub enum ErrorCode {
     VaultNotInitialized,
     #[msg("Invalid amount")]
     InvalidAmount,
+    #[msg("Math overflow")]
+    MathOverflow,
+    #[msg("Insufficient balance")]
+    InsufficientBalance,
+    #[msg("Token mint mismatch")]
+    MintMismatch,
+    #[msg("Vault token account owner mismatch")]
+    VaultOwnerMismatch,
+    #[msg("No quotes available")]
+    NoQuotesAvailable,
+    #[msg("Quotes already consumed")]
+    QuotesAlreadyConsumed,
+    #[msg("Quotes are stale (>150 slots old)")]
+    QuotesStale,
+    #[msg("Rebalance not needed")]
+    RebalanceNotNeeded,
 }

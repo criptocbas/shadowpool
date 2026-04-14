@@ -37,6 +37,10 @@
   scrollbar-color: var(--border-medium) transparent;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 body {
   background: var(--bg-deep);
   color: var(--text-primary);
@@ -44,7 +48,24 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Encrypted hex shimmer */
+/* ─── Focus styles ─── */
+:focus-visible {
+  outline: 1px solid var(--accent-encrypted);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ─── Reduced motion ─── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Encrypted hex shimmer ─── */
 @keyframes cipher-drift {
   0%, 100% { opacity: 0.7; }
   50% { opacity: 1; }
@@ -59,7 +80,7 @@ body {
 .cipher-shimmer:nth-child(4) { animation-delay: 1.2s; }
 .cipher-shimmer:nth-child(5) { animation-delay: 1.6s; }
 
-/* Quote reveal pulse */
+/* ─── Quote reveal pulse ─── */
 @keyframes quote-pulse {
   0% { opacity: 0.6; transform: translateY(2px); }
   100% { opacity: 1; transform: translateY(0); }
@@ -69,7 +90,7 @@ body {
   animation: quote-pulse 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Stagger entrance */
+/* ─── Stagger entrance ─── */
 @keyframes enter-up {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: translateY(0); }
@@ -87,8 +108,252 @@ body {
 .stagger-enter:nth-child(5) { animation-delay: 0.25s; }
 .stagger-enter:nth-child(6) { animation-delay: 0.3s; }
 
-/* Selection */
+/* ─── Selection ─── */
 ::selection {
   background: oklch(0.55 0.12 200 / 0.3);
   color: var(--text-primary);
+}
+
+/* ═══════════════════════════════════════════════════════
+   Landing Page
+   ═══════════════════════════════════════════════════════ */
+
+/* Ambient hero glow — cyan radial emanating from cipher panel area */
+.hero-glow {
+  position: fixed;
+  inset: 0;
+  height: 100vh;
+  background: radial-gradient(
+    ellipse 50% 60% at 72% 45%,
+    oklch(0.55 0.12 200 / 0.06),
+    transparent 70%
+  );
+  pointer-events: none;
+  z-index: 0;
+}
+
+@media (max-width: 1023px) {
+  .hero-glow {
+    background: radial-gradient(
+      ellipse 80% 40% at 50% 70%,
+      oklch(0.55 0.12 200 / 0.05),
+      transparent 70%
+    );
+  }
+}
+
+/* Cipher terminal — the hero visual centerpiece */
+.cipher-terminal {
+  background: oklch(0.115 0.012 260);
+  border: 1px solid oklch(0.28 0.025 200 / 0.3);
+  border-radius: 0.625rem;
+  box-shadow:
+    0 4px 32px oklch(0 0 0 / 0.4),
+    0 0 80px oklch(0.55 0.12 200 / 0.04),
+    inset 0 1px 0 oklch(1 0 0 / 0.02);
+  overflow: hidden;
+}
+
+.cipher-terminal-header {
+  border-bottom: 1px solid oklch(0.22 0.015 200 / 0.3);
+  background: oklch(0.1 0.01 260);
+}
+
+.cipher-terminal-mpc {
+  background: oklch(0.095 0.012 260);
+  border-top: 1px solid oklch(0.22 0.015 200 / 0.25);
+  border-bottom: 1px solid oklch(0.22 0.015 200 / 0.25);
+}
+
+.cipher-terminal-revealed {
+  background: oklch(0.125 0.015 260);
+}
+
+/* Live indicator pulse */
+@keyframes live-pulse {
+  0%, 100% { opacity: 0.5; box-shadow: 0 0 0 0 oklch(0.55 0.12 200 / 0.4); }
+  50% { opacity: 1; box-shadow: 0 0 6px 2px oklch(0.55 0.12 200 / 0.2); }
+}
+
+.live-dot {
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+/* MPC node computation animation — sequential pulse */
+@keyframes node-compute {
+  0%, 100% { opacity: 0.3; transform: scale(0.7); box-shadow: none; }
+  50% { opacity: 1; transform: scale(1.1); box-shadow: 0 0 8px oklch(0.55 0.12 200 / 0.3); }
+}
+
+.mpc-node {
+  animation: node-compute 2s ease-in-out infinite;
+}
+
+/* MPC connecting line pulse */
+@keyframes line-flow {
+  0%, 100% { opacity: 0.12; }
+  50% { opacity: 0.45; }
+}
+
+.mpc-line {
+  animation: line-flow 2s ease-in-out infinite;
+}
+
+/* Revealed price subtle glow */
+.revealed-price {
+  text-shadow: 0 0 20px oklch(0.72 0.15 155 / 0.25);
+}
+
+/* Stat cards */
+.stat-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  padding: 1.5rem;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-medium);
+}
+
+.stat-card[data-accent="danger"] {
+  border-left: 2px solid var(--accent-danger);
+}
+.stat-card[data-accent="danger"]:hover {
+  box-shadow: 0 4px 24px oklch(0.65 0.18 25 / 0.08), -2px 0 16px oklch(0.65 0.18 25 / 0.06);
+}
+
+.stat-card[data-accent="warning"] {
+  border-left: 2px solid var(--accent-warning);
+}
+.stat-card[data-accent="warning"]:hover {
+  box-shadow: 0 4px 24px oklch(0.75 0.15 60 / 0.08), -2px 0 16px oklch(0.75 0.15 60 / 0.06);
+}
+
+.stat-card[data-accent="primary"] {
+  border-left: 2px solid var(--accent-encrypted);
+}
+.stat-card[data-accent="primary"]:hover {
+  box-shadow: 0 4px 24px oklch(0.55 0.12 200 / 0.08), -2px 0 16px oklch(0.55 0.12 200 / 0.06);
+}
+
+/* Step cards for How It Works */
+.step-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 0.5rem;
+  padding: 1.75rem;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.step-card:hover {
+  border-color: var(--border-medium);
+  box-shadow: 0 4px 16px oklch(0 0 0 / 0.2);
+}
+
+/* CTA section gradient line */
+.cta-line {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    oklch(0.55 0.12 200 / 0.4) 30%,
+    oklch(0.72 0.15 155 / 0.4) 70%,
+    transparent
+  );
+}
+
+/* ═══════════════════════════════════════════════════════
+   Vault Dashboard
+   ═══════════════════════════════════════════════════════ */
+
+/* Encrypted panel — recessed, dark, opaque feeling */
+.vault-encrypted {
+  background: oklch(0.115 0.01 260);
+  border: 1px solid oklch(0.22 0.015 200 / 0.2);
+  border-radius: 0.5rem 0 0 0.5rem;
+}
+
+/* Revealed panel — elevated, brighter, illuminated */
+.vault-revealed {
+  background: oklch(0.165 0.018 260);
+  border: 1px solid oklch(0.28 0.02 155 / 0.15);
+  border-radius: 0 0.5rem 0.5rem 0;
+  box-shadow: 0 0 48px oklch(0.72 0.15 155 / 0.025);
+}
+
+/* MPC divider between encrypted and revealed panels */
+.vault-mpc-divider {
+  background: oklch(0.09 0.013 260);
+  border-left: 1px solid oklch(0.22 0.015 200 / 0.2);
+  border-right: 1px solid oklch(0.22 0.015 200 / 0.2);
+}
+
+/* Mobile: panels stack with rounded corners */
+@media (max-width: 767px) {
+  .vault-encrypted { border-radius: 0.5rem 0.5rem 0 0; }
+  .vault-revealed { border-radius: 0 0 0.5rem 0.5rem; }
+}
+
+/* ENCRYPTED badge — prominent, pulsing border */
+.encrypted-badge {
+  background: oklch(0.55 0.12 200 / 0.1);
+  border: 1px solid oklch(0.55 0.12 200 / 0.3);
+  color: var(--accent-encrypted);
+  animation: badge-glow 3s ease-in-out infinite;
+}
+
+@keyframes badge-glow {
+  0%, 100% { border-color: oklch(0.55 0.12 200 / 0.2); box-shadow: none; }
+  50% { border-color: oklch(0.55 0.12 200 / 0.5); box-shadow: 0 0 12px oklch(0.55 0.12 200 / 0.1); }
+}
+
+/* Vault table row hover */
+.vault-row {
+  transition: background 0.15s ease;
+}
+
+.vault-row:hover {
+  background: oklch(0.16 0.012 260);
+}
+
+/* Action badges */
+.badge-held {
+  background: oklch(0.18 0.01 260);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+}
+
+.badge-rebalanced {
+  background: var(--accent-revealed-dim);
+  color: var(--accent-revealed);
+}
+
+/* Strategy locked values */
+.strategy-locked {
+  background: oklch(0.14 0.015 200 / 0.15);
+  border: 1px solid oklch(0.28 0.02 200 / 0.15);
+  border-radius: 0.25rem;
+}
+
+/* Deposit button disabled state */
+.deposit-btn-disabled {
+  background: var(--bg-raised);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-subtle);
+  cursor: default;
+}
+
+/* Deposit button active state */
+.deposit-btn-active {
+  background: var(--accent-encrypted);
+  color: var(--bg-deep);
+  cursor: pointer;
+  transition: filter 0.2s ease;
+}
+
+.deposit-btn-active:hover {
+  filter: brightness(1.1);
 }

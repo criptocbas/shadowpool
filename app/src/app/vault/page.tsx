@@ -29,10 +29,10 @@ const MOCK_VAULT = {
   },
   rebalanceHistory: [
     { time: "2m ago", bid: 149.625, ask: 150.375, rebalanced: false },
-    { time: "3m ago", bid: 149.600, ask: 150.400, rebalanced: true },
-    { time: "4m ago", bid: 149.550, ask: 150.450, rebalanced: false },
-    { time: "5m ago", bid: 149.700, ask: 150.300, rebalanced: false },
-    { time: "6m ago", bid: 149.400, ask: 150.600, rebalanced: true },
+    { time: "3m ago", bid: 149.6, ask: 150.4, rebalanced: true },
+    { time: "4m ago", bid: 149.55, ask: 150.45, rebalanced: false },
+    { time: "5m ago", bid: 149.7, ask: 150.3, rebalanced: false },
+    { time: "6m ago", bid: 149.4, ask: 150.6, rebalanced: true },
   ],
 };
 
@@ -80,6 +80,60 @@ function EncryptedField({
         style={{ color: "var(--accent-encrypted)" }}
       >
         0x{hex}
+      </div>
+    </div>
+  );
+}
+
+// ─── Lock Icon ────────────────────────────────────────────────────────
+function LockIcon() {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="inline-block mr-1 opacity-60"
+    >
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+      <path d="M7 11V7a5 5 0 0110 0v4" />
+    </svg>
+  );
+}
+
+// ─── MPC Vertical Divider ──────────────────────────────────────────────
+function MPCDivider() {
+  return (
+    <div className="vault-mpc-divider flex flex-row md:flex-col items-center justify-center gap-2 py-3 md:py-0 px-4 md:px-3">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="contents">
+          <div
+            className="mpc-node w-[6px] h-[6px] rounded-full shrink-0"
+            style={{
+              background: "var(--accent-encrypted)",
+              animationDelay: `${i * 0.5}s`,
+            }}
+          />
+          {i < 2 && (
+            <div
+              className="mpc-line w-4 md:w-px h-px md:h-5 shrink-0"
+              style={{
+                background: "var(--accent-encrypted-dim)",
+                animationDelay: `${i * 0.5 + 0.25}s`,
+              }}
+            />
+          )}
+        </div>
+      ))}
+      <div
+        className="text-[7px] font-mono uppercase tracking-[0.2em] md:[writing-mode:vertical-rl] md:rotate-180 mt-1 md:mt-2 whitespace-nowrap"
+        style={{ color: "var(--accent-encrypted-dim)" }}
+      >
+        MPC
       </div>
     </div>
   );
@@ -150,18 +204,12 @@ export default function VaultDashboard() {
             >
               {v.pair}
             </h1>
-            <span
-              className="text-xs font-mono px-2 py-0.5 rounded"
-              style={{
-                background: "var(--accent-encrypted-dim)",
-                color: "var(--accent-encrypted)",
-              }}
-            >
+            <span className="encrypted-badge text-[10px] font-mono px-2.5 py-1 rounded tracking-wider">
               ENCRYPTED
             </span>
           </div>
           <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>
-            Confidential market-making vault · Arcium MPC
+            Confidential market-making vault &middot; Arcium MPC
           </p>
         </div>
 
@@ -216,19 +264,13 @@ export default function VaultDashboard() {
             className="px-6 md:px-10 py-8"
             style={{ borderRight: "1px solid var(--border-subtle)" }}
           >
-            {/* The Privacy Visualization — THE demo moment */}
-            <div className="grid md:grid-cols-2 gap-0 rounded overflow-hidden">
+            {/* The Privacy Visualization — encrypted | MPC | revealed */}
+            <div className="grid grid-cols-1 md:grid-cols-[1fr,auto,1fr] overflow-hidden">
               {/* Encrypted State Panel */}
-              <div
-                className="p-6"
-                style={{
-                  background: "var(--bg-surface)",
-                  borderRight: "1px solid var(--border-subtle)",
-                }}
-              >
+              <div className="vault-encrypted p-6">
                 <div className="flex items-center gap-2 mb-5">
                   <div
-                    className="w-1.5 h-1.5 rounded-full"
+                    className="live-dot w-1.5 h-1.5 rounded-full"
                     style={{ background: "var(--accent-encrypted)" }}
                   />
                   <span
@@ -265,8 +307,11 @@ export default function VaultDashboard() {
                 </p>
               </div>
 
+              {/* MPC Divider */}
+              <MPCDivider />
+
               {/* Revealed Quotes Panel */}
-              <div className="p-6" style={{ background: "var(--bg-raised)" }}>
+              <div className="vault-revealed p-6">
                 <div className="flex items-center gap-2 mb-5">
                   <div
                     className="w-1.5 h-1.5 rounded-full"
@@ -307,7 +352,7 @@ export default function VaultDashboard() {
                         Bid
                       </div>
                       <div
-                        className="font-mono text-lg font-light quote-reveal"
+                        className="revealed-price font-mono text-lg font-light quote-reveal"
                         style={{ color: "var(--accent-revealed)" }}
                       >
                         ${v.quotes.bidPrice.toFixed(3)}
@@ -327,7 +372,7 @@ export default function VaultDashboard() {
                         Ask
                       </div>
                       <div
-                        className="font-mono text-lg font-light quote-reveal"
+                        className="revealed-price font-mono text-lg font-light quote-reveal"
                         style={{
                           color: "var(--accent-revealed)",
                           animationDelay: "0.15s",
@@ -408,15 +453,19 @@ export default function VaultDashboard() {
                 Recent computations
               </div>
               <div
-                className="rounded overflow-hidden"
+                className="rounded overflow-x-auto"
                 style={{
                   background: "var(--bg-surface)",
                   border: "1px solid var(--border-subtle)",
                 }}
               >
-                <table className="w-full text-xs">
+                <table className="w-full text-xs min-w-[520px]">
                   <thead>
-                    <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                    <tr
+                      style={{
+                        borderBottom: "1px solid var(--border-subtle)",
+                      }}
+                    >
                       {["Time", "Bid", "Ask", "Spread", "Action"].map((h) => (
                         <th
                           key={h}
@@ -432,6 +481,7 @@ export default function VaultDashboard() {
                     {v.rebalanceHistory.map((r, i) => (
                       <tr
                         key={i}
+                        className="vault-row"
                         style={{
                           borderBottom:
                             i < v.rebalanceHistory.length - 1
@@ -462,29 +512,19 @@ export default function VaultDashboard() {
                           style={{ color: "var(--text-tertiary)" }}
                         >
                           {(
-                            ((r.ask - r.bid) /
-                              ((r.ask + r.bid) / 2)) *
+                            ((r.ask - r.bid) / ((r.ask + r.bid) / 2)) *
                             100
                           ).toFixed(3)}
                           %
                         </td>
                         <td className="px-4 py-2.5">
                           {r.rebalanced ? (
-                            <span
-                              className="text-[10px] font-mono px-2 py-0.5 rounded"
-                              style={{
-                                background: "var(--accent-revealed-dim)",
-                                color: "var(--accent-revealed)",
-                              }}
-                            >
+                            <span className="badge-rebalanced text-[10px] font-mono px-2 py-0.5 rounded">
                               REBALANCED
                             </span>
                           ) : (
-                            <span
-                              className="text-[10px] font-mono"
-                              style={{ color: "var(--text-tertiary)" }}
-                            >
-                              held
+                            <span className="badge-held text-[10px] font-mono px-2 py-0.5 rounded">
+                              HELD
                             </span>
                           )}
                         </td>
@@ -533,44 +573,49 @@ export default function VaultDashboard() {
               </div>
 
               <div className="p-5">
-                <div className="mb-4">
-                  <label
-                    className="block text-[10px] tracking-[0.2em] uppercase mb-2"
-                    style={{ color: "var(--text-tertiary)" }}
-                  >
+                {/* Balance display */}
+                <div
+                  className="flex justify-between items-center mb-3 text-[10px] tracking-[0.15em] uppercase"
+                  style={{ color: "var(--text-tertiary)" }}
+                >
+                  <span>
                     {activeTab === "deposit" ? "Amount (USDC)" : "Shares"}
-                  </label>
-                  <div
-                    className="flex items-center rounded px-3 py-2.5"
+                  </span>
+                  <span className="font-mono normal-case tracking-normal">
+                    Balance: —
+                  </span>
+                </div>
+
+                <div
+                  className="flex items-center rounded px-3 py-2.5"
+                  style={{
+                    background: "var(--bg-deep)",
+                    border: "1px solid var(--border-medium)",
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="flex-1 bg-transparent outline-none font-mono text-sm"
+                    style={{ color: "var(--text-primary)" }}
+                  />
+                  <button
+                    className="text-[10px] tracking-wider uppercase px-2 py-1 rounded transition-colors"
                     style={{
-                      background: "var(--bg-deep)",
-                      border: "1px solid var(--border-medium)",
+                      color: "var(--accent-encrypted)",
+                      background: "var(--bg-raised)",
                     }}
+                    onClick={() => setDepositAmount("1000")}
                   >
-                    <input
-                      type="text"
-                      value={depositAmount}
-                      onChange={(e) => setDepositAmount(e.target.value)}
-                      placeholder="0.00"
-                      className="flex-1 bg-transparent outline-none font-mono text-sm"
-                      style={{ color: "var(--text-primary)" }}
-                    />
-                    <button
-                      className="text-[10px] tracking-wider uppercase px-2 py-1 rounded transition-colors"
-                      style={{
-                        color: "var(--accent-encrypted)",
-                        background: "var(--bg-raised)",
-                      }}
-                      onClick={() => setDepositAmount("1000")}
-                    >
-                      Max
-                    </button>
-                  </div>
+                    Max
+                  </button>
                 </div>
 
                 {depositAmount && (
                   <div
-                    className="mb-4 py-3 space-y-2"
+                    className="mt-4 py-3 space-y-2"
                     style={{ borderTop: "1px solid var(--border-subtle)" }}
                   >
                     <div className="flex justify-between text-xs">
@@ -602,18 +647,15 @@ export default function VaultDashboard() {
                 )}
 
                 <button
-                  className="w-full py-3 text-sm font-medium tracking-wide rounded transition-all duration-200"
-                  style={{
-                    background: depositAmount
-                      ? "var(--accent-encrypted)"
-                      : "var(--bg-raised)",
-                    color: depositAmount
-                      ? "var(--bg-deep)"
-                      : "var(--text-tertiary)",
-                    cursor: depositAmount ? "pointer" : "default",
-                  }}
+                  className={`w-full py-3 mt-4 text-sm font-medium tracking-wide rounded ${
+                    depositAmount ? "deposit-btn-active" : "deposit-btn-disabled"
+                  }`}
                 >
-                  {activeTab === "deposit" ? "Deposit" : "Withdraw"}
+                  {depositAmount
+                    ? activeTab === "deposit"
+                      ? "Deposit"
+                      : "Withdraw"
+                    : "Enter amount"}
                 </button>
               </div>
             </div>
@@ -634,23 +676,23 @@ export default function VaultDashboard() {
                 }}
               >
                 {[
-                  { label: "Spread", value: "██████ bps" },
-                  { label: "Rebalance Threshold", value: "██████ bps" },
-                  { label: "Base Balance", value: "████████████" },
-                  { label: "Quote Balance", value: "████████████" },
+                  { label: "Spread", hex: "a3f2c1" },
+                  { label: "Rebalance Threshold", hex: "7d91f3" },
+                  { label: "Base Balance", hex: "5c6a0f82d3" },
+                  { label: "Quote Balance", hex: "2e8fc71d4a" },
                 ].map((item) => (
-                  <div key={item.label} className="flex justify-between">
+                  <div key={item.label} className="flex justify-between items-center">
                     <span
                       className="text-xs"
                       style={{ color: "var(--text-tertiary)" }}
                     >
                       {item.label}
                     </span>
-                    <span
-                      className="text-xs font-mono"
+                    <span className="strategy-locked text-[10px] font-mono px-2 py-0.5 flex items-center"
                       style={{ color: "var(--accent-encrypted-dim)" }}
                     >
-                      {item.value}
+                      <LockIcon />
+                      0x{item.hex}...
                     </span>
                   </div>
                 ))}
@@ -678,26 +720,19 @@ export default function VaultDashboard() {
               >
                 Powered by
               </div>
-              <div
-                className="flex items-center gap-2 text-xs font-mono px-2.5 py-1 rounded"
-                style={{
-                  background: "var(--bg-surface)",
-                  border: "1px solid var(--border-subtle)",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                Arcium MPC
-              </div>
-              <div
-                className="flex items-center gap-2 text-xs font-mono px-2.5 py-1 rounded"
-                style={{
-                  background: "var(--bg-surface)",
-                  border: "1px solid var(--border-subtle)",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                Solana
-              </div>
+              {["Arcium MPC", "Solana"].map((badge) => (
+                <div
+                  key={badge}
+                  className="flex items-center gap-2 text-xs font-mono px-2.5 py-1 rounded"
+                  style={{
+                    background: "var(--bg-surface)",
+                    border: "1px solid var(--border-subtle)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {badge}
+                </div>
+              ))}
             </div>
           </div>
         </div>

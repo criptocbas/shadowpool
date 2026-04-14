@@ -15,8 +15,16 @@ cd app && npx next dev          # Frontend at localhost:3000
 ## Architecture
 
 **Core insight:** Encrypted computation and public execution are SEPARATE instructions.
-- `compute_quotes` → MPC computes quotes from encrypted state + public oracle → callback reveals plaintext bid/ask
-- `execute_rebalance` → separate instruction takes revealed quotes and CPIs into DEX
+- `compute_quotes` — MPC computes quotes from encrypted state + public oracle, callback persists plaintext bid/ask to vault
+- `execute_rebalance` — reads persisted quotes, CPIs into DEX (Meteora DLMM), marks quotes consumed
+- `update_balances` — MPC updates encrypted internal balances with actual trade deltas
+
+**Full rebalance cycle:**
+```
+compute_quotes (MPC) → quotes persisted on-chain
+    → execute_rebalance (DEX CPI) → actual trade happens
+        → update_balances (MPC) → encrypted state updated
+```
 
 **5 Arcis circuits** (`encrypted-ixs/src/lib.rs`):
 1. `init_vault_state` — create encrypted VaultState from client-encrypted strategy params
@@ -25,32 +33,54 @@ cd app && npx next dev          # Frontend at localhost:3000
 4. `update_strategy` — owner changes encrypted spread/threshold
 5. `reveal_performance` — selective disclosure of total vault value
 
-**State:** Encrypted state stored as `[[u8; 32]; 5]` ciphertexts in the Vault account. Read by MPC via `.account(key, offset, size)`. Byte offset is 249, size is 160.
+**Non-MPC instructions** (`programs/shadowpool/src/lib.rs`):
+- `initialize_vault` — create vault PDA, validate SPL mints/ATAs
+- `deposit` — SPL token transfer + share token mint (vault PDA signs)
+- `withdraw` — share token burn + SPL token transfer back (vault PDA signs)
+- `execute_rebalance` — read persisted quotes, validate staleness, CPI into DEX (skeleton)
 
-**Token flow (MVP):** Public SPL deposits. Privacy is in the STRATEGY, not deposit amounts.
+**State:** Encrypted state stored as `[[u8; 32]; 5]` ciphertexts in the Vault account. Read by MPC via `.account(key, offset, size)`. Byte offset is 249, size is 160. Quote persistence fields are stored AFTER `encrypted_state` to preserve the offset.
+
+**Token flow:** Real SPL token deposit/withdraw with share token minting. Vault PDA owns token accounts and signs all transfers/mints. Privacy is in the STRATEGY, not deposit amounts.
 
 ## File Structure
 
 ```
-encrypted-ixs/src/lib.rs       # Arcis MPC circuits (5 instructions)
-programs/shadowpool/src/lib.rs  # Anchor program (all instructions + accounts)
-tests/shadowpool.ts             # 7 passing tests (full rebalance cycle)
-app/src/app/                    # Next.js 15 frontend
-  page.tsx                      #   Landing page with cipher visualization
-  vault/page.tsx                #   Vault dashboard (encrypted vs revealed)
-research/shadowpool/            # 15 research documents (560KB)
-  14-architecture-blueprint.md  #   THE blueprint — read this for full architecture
+programs/shadowpool/src/lib.rs  # Anchor program (19 instructions, ~1340 lines)
+encrypted-ixs/src/lib.rs       # Arcis MPC circuits (5 encrypted instructions)
+tests/shadowpool.ts             # Integration tests (MPC rebalance cycle)
+app/
+  src/
+    app/
+      page.tsx                  # Landing page
+      vault/page.tsx            # Vault dashboard (mock data)
+      layout.tsx                # Root layout
+    providers/
+      WalletProvider.tsx        # Solana wallet adapter (Phantom, Solflare, devnet)
+    hooks/
+      index.ts                  # Barrel export
+      useVault.ts               # Fetch vault account, poll every 10s
+      useQuotes.ts              # Listen for QuotesComputedEvent
+      useDeposit.ts             # Call deposit instruction
+      useWithdraw.ts            # Call withdraw instruction
+      useComputeQuotes.ts       # Call computeQuotes with Arcium accounts
+    lib/
+      constants.ts              # Program ID, vault PDA derivation, offsets
+      program.ts                # Anchor client setup, IDL import
+target/
+  idl/shadowpool.json           # Generated IDL (arcium build)
+  types/shadowpool.ts           # Generated TypeScript types
 ```
 
 ## Critical Gotchas
 
-1. **tools-version**: `[package.metadata.solana] tools-version = "v1.52"` in program Cargo.toml. Without this, build fails with `edition2024` error (platform-tools v1.48 bundles Rust 1.84.1, needs 1.85+).
+1. **tools-version**: `[package.metadata.solana] tools-version = "v1.52"` in program Cargo.toml. Without this, build fails with `edition2024` error.
 
-2. **ArgBuilder order MUST match circuit parameter order**: `Enc<Mxe>` args first (nonce + .account()), then plaintext args, then `Enc<Shared>` args. Wrong order → runtime `InvalidArguments` error with no helpful message.
+2. **ArgBuilder order MUST match circuit parameter order**: `Enc<Mxe>` args first (nonce + `.account()`), then plaintext args, then `Enc<Shared>` args. Wrong order → runtime `InvalidArguments` error with no helpful message.
 
-3. **Zombie validators**: `arcium test` leaves `solana-test-validator` running after completion. The `package.json` pre/post hooks handle this (`pkill -9 -x solana-test-val`). Always use `yarn test`, never bare `arcium test`.
+3. **Zombie validators**: `arcium test` leaves `solana-test-validator` running. The `package.json` pre/post hooks handle this (`pkill -9 -x solana-test-val`). Always use `yarn test`, never bare `arcium test`.
 
-4. **Box large accounts**: `Cluster`, `ComputationDefinitionAccount`, and `Vault` must be `Box<Account<'info, T>>` in account structs. Otherwise BPF stack overflow (access violation).
+4. **Box large accounts**: `Cluster`, `ComputationDefinitionAccount`, and `Vault` must be `Box<Account<'info, T>>` in account structs. Otherwise BPF stack overflow.
 
 5. **`init_comp_def` takes 3 args**: `init_comp_def(ctx.accounts, None, None)`. NOT 4 args (the `u32` priority param was removed in v0.9).
 
@@ -60,21 +90,40 @@ research/shadowpool/            # 15 research documents (560KB)
 
 8. **Idempotent comp def init**: Wrap `initXCompDef` calls in try/catch that swallows "already in use" errors. The `tests/shadowpool.ts` helper does this.
 
-9. **ENCRYPTED_STATE_OFFSET = 249**: Manually calculated from Vault struct layout (8 disc + 1 bump + 32×6 pubkeys + 8×4 u64s + 16 u128). If you add/remove fields before `encrypted_state`, recalculate this.
+9. **ENCRYPTED_STATE_OFFSET = 249**: Calculated from Vault struct layout: `8 (disc) + 1 (bump) + 32*6 (pubkeys) + 8*4 (u64s) + 16 (u128) = 249`. Quote persistence fields (bid/ask/sizes/slot/consumed) are placed AFTER `encrypted_state` specifically to avoid invalidating this offset. Never add fields between `state_nonce` and `encrypted_state`.
+
+10. **Vault PDA signing**: Seeds are `[b"vault", authority.as_ref(), &[bump]]`. Extract `authority` and `bump` from the vault before any mutable borrow to satisfy the Rust borrow checker.
+
+11. **anchor-spl idl-build**: The `idl-build` feature in Cargo.toml must include `anchor-spl/idl-build` or `TokenAccount` / `Mint` types fail with "no associated item named `DISCRIMINATOR`" during IDL generation.
 
 ## Current Status
 
-- **Backend**: 7/7 tests passing. Full rebalance cycle proven (init → compute → update → recompute with non-zero sizes → strategy update → performance reveal).
-- **Frontend**: Landing page + vault dashboard scaffolded with mock data. Not connected to on-chain program yet.
-- **Next priorities**: Wire frontend to on-chain data, implement proper SPL token deposit/withdraw, devnet deployment.
+- **Program**: Compiles clean. 19 instructions in IDL. Full MPC rebalance cycle + SPL deposit/withdraw + execute_rebalance skeleton.
+- **Tests**: 7/7 passing for the MPC cycle (pre-SPL token refactor). Tests need updating for new `InitializeVault` constraints (real mints/ATAs instead of random pubkeys).
+- **Frontend**: Landing page + vault dashboard with mock data. Connection layer (WalletProvider, hooks, Anchor client) created but not yet wired into the UI pages.
+- **DEX integration**: `execute_rebalance` validates and consumes persisted quotes but does not yet CPI into a DEX. Meteora DLMM is the target (research complete, `declare_program!` approach with IDL).
+
+**Next priorities:**
+1. Update tests for SPL token accounts (create real mints/ATAs in test setup)
+2. Meteora DLMM CPI in `execute_rebalance`
+3. Wire frontend hooks into vault dashboard UI
+4. Devnet deployment
 
 ## Code Patterns
 
-- Every MPC instruction follows the sealed_bid_auction pattern: queue instruction → ArgBuilder → queue_computation → callback writes to vault account
-- Callbacks use `CallbackAccount { pubkey: vault.key(), is_writable: true }` to pass the vault for state mutation
-- Events emitted from callbacks for frontend consumption (QuotesComputedEvent, etc.)
-- Oracle prices are plaintext inputs (public data, no point encrypting)
-- `comp_def_offset("circuit_name")` generates the constant for each circuit
+**MPC instructions:** Every encrypted instruction follows: queue instruction → ArgBuilder → `queue_computation` → callback writes to vault account. Callbacks use `CallbackAccount { pubkey: vault.key(), is_writable: true }`.
+
+**Vault PDA signing for SPL operations:**
+```rust
+let authority_key = ctx.accounts.vault.authority;
+let bump = ctx.accounts.vault.bump;
+let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
+// CPI with signer_seeds, then mutably borrow vault for state updates
+```
+
+**Quote lifecycle:** `compute_quotes_callback` persists quotes + sets `quotes_consumed = false` → `execute_rebalance` reads quotes, validates staleness (150 slots), executes, sets `quotes_consumed = true` → prevents replay.
+
+**Events:** Emitted from callbacks and instructions for frontend consumption (`QuotesComputedEvent`, `DepositEvent`, `WithdrawEvent`, `RebalanceExecutedEvent`, etc.).
 
 ## Arcium Skill
 

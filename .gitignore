@@ -9,3 +9,6 @@ encrypted-ixs/arcis_temp_target
 build
 encrypted-ixs/src/main.rs
 artifacts/
+
+# Submission prep — local-only, has its own private git repo
+submission/
