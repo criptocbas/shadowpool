@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "sync-idl": "cp ../target/idl/shadowpool.json src/idl/shadowpool.json && echo 'IDL synced'"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.30.1",

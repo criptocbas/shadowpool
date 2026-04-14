@@ -1,7 +1,10 @@
 import { Program, AnchorProvider, type Idl } from "@coral-xyz/anchor";
 import { Connection } from "@solana/web3.js";
 import type { AnchorWallet } from "@solana/wallet-adapter-react";
-import IDL_JSON from "../../../target/idl/shadowpool.json";
+// Bundled IDL — refresh via `yarn sync-idl` (see app/package.json) after any
+// program rebuild. This avoids relying on ../../../target/ being present in
+// a fresh checkout (which it isn't until `arcium build` runs).
+import IDL_JSON from "@/idl/shadowpool.json";
 import { PROGRAM_ID } from "./constants";
 
 /** Create an Anchor Program instance for the ShadowPool program */

@@ -64,12 +64,22 @@ export function useVault(authority: PublicKey | null) {
     }
   }, [authority, wallet, connection]);
 
-  // Initial fetch + poll every 10 seconds
+  // Initial fetch + poll every 10 seconds.
+  //
+  // Only start the interval when we have a wallet and an authority — with no
+  // wallet connected, fetchVault is a no-op but re-running it every 10s is
+  // pointless work (and on very slow machines can stack up microtasks).
   useEffect(() => {
+    if (!authority || !wallet) {
+      // Clear any previously fetched vault so a wallet change doesn't
+      // surface stale data from the prior connection.
+      setVault(null);
+      return;
+    }
     fetchVault();
     const interval = setInterval(fetchVault, 10_000);
     return () => clearInterval(interval);
-  }, [fetchVault]);
+  }, [fetchVault, authority, wallet]);
 
   return { vault, loading, error, refetch: fetchVault };
 }

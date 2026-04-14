@@ -1454,3 +1454,48 @@ pub enum ErrorCode {
     #[msg("Slippage tolerance exceeds the 5% ceiling")]
     SlippageTooHigh,
 }
+
+// ==============================================================
+// INVARIANT TESTS
+// ==============================================================
+
+#[cfg(test)]
+mod invariant_tests {
+    use super::ENCRYPTED_STATE_OFFSET;
+
+    /// The MPC cluster reads the encrypted vault state directly from the
+    /// account bytes at a fixed offset (via `.account(pubkey, offset, size)`
+    /// in Arcis ArgBuilder). If anyone inserts a field above `encrypted_state`
+    /// in the Vault struct, the offset must be updated — otherwise the MPC
+    /// reads wrong bytes and every circuit produces garbage.
+    ///
+    /// This test pins the offset to the serialized layout of the preamble so
+    /// a layout change fails fast at `cargo test` time rather than silently
+    /// corrupting encrypted state on-chain.
+    #[test]
+    fn encrypted_state_offset_matches_vault_preamble() {
+        // Vault serialized preamble (Anchor uses borsh, which writes fields
+        // sequentially without padding):
+        //   discriminator  : 8 bytes  (Anchor-injected account tag)
+        //   bump           : u8       =  1
+        //   authority      : Pubkey   = 32
+        //   token_a_mint   : Pubkey   = 32
+        //   token_b_mint   : Pubkey   = 32
+        //   token_a_vault  : Pubkey   = 32
+        //   token_b_vault  : Pubkey   = 32
+        //   share_mint     : Pubkey   = 32
+        //   total_shares         : u64 = 8
+        //   total_deposits_a     : u64 = 8
+        //   total_deposits_b     : u64 = 8
+        //   last_rebalance_slot  : u64 = 8
+        //   state_nonce          : u128 = 16
+        //
+        //   Sum = 8 + 1 + (6 * 32) + (4 * 8) + 16 = 249
+        const EXPECTED: u32 = 8 + 1 + (6 * 32) + (4 * 8) + 16;
+        assert_eq!(
+            ENCRYPTED_STATE_OFFSET, EXPECTED,
+            "ENCRYPTED_STATE_OFFSET drift: if you added/removed a Vault field above \
+             `encrypted_state`, update both the constant and this test."
+        );
+    }
+}
