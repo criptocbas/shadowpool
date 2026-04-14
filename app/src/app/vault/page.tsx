@@ -4,7 +4,29 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { useVault, useQuotes } from "@/hooks";
+import {
+  getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID,
+} from "@solana/spl-token";
+import { useVault, useQuotes, useDeposit, useWithdraw } from "@/hooks";
+
+// USDC (quote) has 6 decimals on Solana. Share tokens are minted with 9.
+const QUOTE_DECIMALS = 6;
+const SHARE_DECIMALS = 9;
+
+function toRawUnits(displayAmount: string, decimals: number): bigint | null {
+  const trimmed = displayAmount.trim();
+  if (!trimmed || isNaN(Number(trimmed))) return null;
+  // Avoid floating-point drift on fractional inputs by parsing the
+  // integer and fractional parts separately.
+  const [intPart, fracPart = ""] = trimmed.split(".");
+  const paddedFrac = (fracPart + "0".repeat(decimals)).slice(0, decimals);
+  try {
+    return BigInt(intPart || "0") * BigInt(10 ** decimals) + BigInt(paddedFrac || "0");
+  } catch {
+    return null;
+  }
+}
 
 // ─── Demo-state fallback (shown before wallet connects) ────────────────
 // When a wallet is connected and a vault exists, the dashboard renders
@@ -154,8 +176,25 @@ export default function VaultDashboard() {
   // Real on-chain data — vault fetched for the connected wallet, quotes
   // streamed via program event listener.
   const { publicKey, connected } = useWallet();
-  const { vault, loading: vaultLoading } = useVault(publicKey ?? null);
+  const { vault, loading: vaultLoading, refetch: refetchVault } = useVault(publicKey ?? null);
   const { quotes } = useQuotes();
+  const {
+    deposit,
+    loading: depositLoading,
+    error: depositError,
+    txSig: depositTxSig,
+  } = useDeposit(publicKey ?? null);
+  const {
+    withdraw,
+    loading: withdrawLoading,
+    error: withdrawError,
+    txSig: withdrawTxSig,
+  } = useWithdraw(publicKey ?? null);
+
+  // Surface the relevant tx feedback regardless of active tab.
+  const txError = depositError ?? withdrawError;
+  const txSig = depositTxSig ?? withdrawTxSig;
+  const txLoading = depositLoading || withdrawLoading;
 
   // Derive the display model `v`. When on-chain data exists we use it;
   // otherwise we fall back to MOCK_VAULT so the page still renders as a
@@ -216,6 +255,54 @@ export default function VaultDashboard() {
   }, [vault, quotes]);
 
   const isDemoMode = !connected || !vault;
+
+  // ─── Deposit / Withdraw handlers ──────────────────────────────
+  // The program exposes deposit/withdraw with explicit SPL account
+  // arguments so the program doesn't need token-account derivation. We
+  // resolve user ATAs here, parse the amount, and delegate to the hook.
+  const handleDeposit = useCallback(async () => {
+    if (!vault || !publicKey) return;
+    const raw = toRawUnits(depositAmount, QUOTE_DECIMALS);
+    if (raw === null || raw <= BigInt(0)) return;
+    const [userTokenAccount, userShareAccount] = await Promise.all([
+      getAssociatedTokenAddress(vault.tokenBMint, publicKey, false, TOKEN_PROGRAM_ID),
+      getAssociatedTokenAddress(vault.shareMint, publicKey, false, TOKEN_PROGRAM_ID),
+    ]);
+    await deposit(
+      Number(raw),           // amount in quote raw units
+      userTokenAccount,
+      userShareAccount,
+      vault.tokenBVault,
+      vault.shareMint
+    );
+    refetchVault();          // sync the dashboard after a successful deposit
+    setDepositAmount("");
+  }, [vault, publicKey, depositAmount, deposit, refetchVault]);
+
+  const handleWithdraw = useCallback(async () => {
+    if (!vault || !publicKey) return;
+    const rawShares = toRawUnits(depositAmount, SHARE_DECIMALS);
+    if (rawShares === null || rawShares <= BigInt(0)) return;
+    const [userTokenAccount, userShareAccount] = await Promise.all([
+      getAssociatedTokenAddress(vault.tokenBMint, publicKey, false, TOKEN_PROGRAM_ID),
+      getAssociatedTokenAddress(vault.shareMint, publicKey, false, TOKEN_PROGRAM_ID),
+    ]);
+    await withdraw(
+      Number(rawShares),
+      userTokenAccount,
+      userShareAccount,
+      vault.tokenBVault,
+      vault.shareMint
+    );
+    refetchVault();
+    setDepositAmount("");
+  }, [vault, publicKey, depositAmount, withdraw, refetchVault]);
+
+  const canSubmit =
+    connected &&
+    vault !== null &&
+    !txLoading &&
+    toRawUnits(depositAmount, activeTab === "deposit" ? QUOTE_DECIMALS : SHARE_DECIMALS) !== null;
 
   return (
     <div className="min-h-screen" style={{ background: "var(--bg-deep)" }}>
@@ -741,16 +828,47 @@ export default function VaultDashboard() {
                 )}
 
                 <button
+                  disabled={!canSubmit}
+                  onClick={activeTab === "deposit" ? handleDeposit : handleWithdraw}
                   className={`w-full py-3 mt-4 text-sm font-medium tracking-wide rounded ${
-                    depositAmount ? "deposit-btn-active" : "deposit-btn-disabled"
+                    canSubmit ? "deposit-btn-active" : "deposit-btn-disabled"
                   }`}
                 >
-                  {depositAmount
+                  {txLoading
                     ? activeTab === "deposit"
-                      ? "Deposit"
-                      : "Withdraw"
-                    : "Enter amount"}
+                      ? "Depositing…"
+                      : "Withdrawing…"
+                    : !depositAmount
+                      ? "Enter amount"
+                      : !connected
+                        ? "Connect wallet"
+                        : !vault
+                          ? "No vault found"
+                          : activeTab === "deposit"
+                            ? "Deposit"
+                            : "Withdraw"}
                 </button>
+
+                {/* Tx feedback — shown only when there's something to say. */}
+                {txError && (
+                  <p
+                    className="mt-3 text-[11px] leading-relaxed break-all"
+                    style={{ color: "var(--accent-danger)" }}
+                  >
+                    {txError}
+                  </p>
+                )}
+                {txSig && !txError && (
+                  <a
+                    href={`https://explorer.solana.com/tx/${txSig}?cluster=devnet`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 block text-[11px] font-mono break-all underline-offset-2 hover:underline"
+                    style={{ color: "var(--accent-revealed)" }}
+                  >
+                    Tx: {txSig.slice(0, 12)}…{txSig.slice(-8)} ↗
+                  </a>
+                )}
               </div>
             </div>
 
