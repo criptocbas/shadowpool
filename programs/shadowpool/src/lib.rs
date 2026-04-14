@@ -861,7 +861,15 @@ pub struct CreateVaultState<'info> {
 pub struct ComputeQuotes<'info> {
     #[account(mut)]
     pub cranker: Signer<'info>,
-    #[account(mut)]
+    // Bind vault to its derived PDA so a caller cannot pass an arbitrary
+    // Vault account that happens to deserialize. Using vault.authority as
+    // the seed keeps the cranker decoupled from the authority while still
+    // proving the Vault is the legitimate one for that authority.
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Box<Account<'info, Vault>>,
     #[account(
         init_if_needed, space = 9, payer = cranker,
@@ -898,7 +906,11 @@ pub struct ComputeQuotes<'info> {
 pub struct UpdateBalances<'info> {
     #[account(mut)]
     pub cranker: Signer<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Box<Account<'info, Vault>>,
     #[account(
         init_if_needed, space = 9, payer = cranker,
@@ -977,7 +989,11 @@ pub struct UpdateStrategy<'info> {
 pub struct RevealPerformance<'info> {
     #[account(mut)]
     pub caller: Signer<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Box<Account<'info, Vault>>,
     #[account(
         init_if_needed, space = 9, payer = caller,
@@ -1027,8 +1043,15 @@ pub struct InitVaultStateCallback<'info> {
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     /// CHECK: instructions sysvar
     pub instructions_sysvar: AccountInfo<'info>,
-    // Custom callback account: vault to write encrypted state into
-    #[account(mut)]
+    // Custom callback account: vault to write encrypted state into.
+    // Seed binding ensures Arcium can only deliver the callback to a
+    // legitimate vault PDA, not an arbitrary account that happens to
+    // deserialize as Vault.
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Account<'info, Vault>,
 }
 
@@ -1047,7 +1070,11 @@ pub struct ComputeQuotesCallback<'info> {
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     /// CHECK: instructions sysvar
     pub instructions_sysvar: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Account<'info, Vault>,
 }
 
@@ -1066,7 +1093,11 @@ pub struct UpdateBalancesCallback<'info> {
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     /// CHECK: instructions sysvar
     pub instructions_sysvar: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Account<'info, Vault>,
 }
 
@@ -1085,7 +1116,11 @@ pub struct UpdateStrategyCallback<'info> {
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     /// CHECK: instructions sysvar
     pub instructions_sysvar: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Account<'info, Vault>,
 }
 
@@ -1104,7 +1139,11 @@ pub struct RevealPerformanceCallback<'info> {
     #[account(address = ::anchor_lang::solana_program::sysvar::instructions::ID)]
     /// CHECK: instructions sysvar
     pub instructions_sysvar: AccountInfo<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"vault", vault.authority.as_ref()],
+        bump = vault.bump,
+    )]
     pub vault: Account<'info, Vault>,
 }
 
@@ -1339,7 +1378,16 @@ pub struct Withdraw<'info> {
 
 #[derive(Accounts)]
 pub struct ExecuteRebalance<'info> {
-    #[account(mut)]
+    // Authority gate: only the vault's authority (creator) can execute
+    // a rebalance. Otherwise any address could call this and consume a
+    // freshly-computed quote (setting quotes_consumed=true) before the
+    // legitimate cranker / DEX-routing flow runs — a griefing vector
+    // and, post-DEX-CPI, a sandwich vector. A future iteration can add
+    // a delegated `cranker` field to the Vault for trustless cranking.
+    #[account(
+        mut,
+        constraint = cranker.key() == vault.authority @ ErrorCode::Unauthorized,
+    )]
     pub cranker: Signer<'info>,
     #[account(
         mut,
