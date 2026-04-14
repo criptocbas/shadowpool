@@ -275,3 +275,158 @@ mod circuits {
         total.reveal()
     }
 }
+
+// ==============================================================
+// UNIT TESTS — pure math, no MPC context required
+// ==============================================================
+//
+// Arcis #[instruction] functions take Enc<_, _> inputs that can't be
+// constructed outside the MPC runtime, so we re-express the core arithmetic
+// of each circuit as a plain function and test those. If these tests pass
+// and the circuit body stays equivalent to them, the circuit's algorithmic
+// behaviour is also correct. Any divergence between these helpers and the
+// circuit bodies is itself a review signal.
+
+#[cfg(test)]
+mod tests {
+    // ---- compute_quotes helpers ----
+
+    /// Matches the effective_spread clamp in compute_quotes.
+    fn clamp_effective_spread(spread_bps: u16, conf_multiplier: u16) -> u32 {
+        let raw = (spread_bps as u32) * (conf_multiplier as u32);
+        if raw > 9999 { 9999 } else { raw }
+    }
+
+    /// Matches the half_spread calculation in compute_quotes.
+    fn half_spread(oracle_price: u64, effective_spread_bps: u32) -> u64 {
+        (((oracle_price as u128) * (effective_spread_bps as u128)) / 20000u128) as u64
+    }
+
+    /// Matches the Arcis safe-divisor bid_size pattern.
+    fn bid_size(quote_balance: u64, bid_price: u64) -> u64 {
+        let valid = bid_price != 0;
+        let safe = if valid { bid_price } else { 1 };
+        let cand = quote_balance / safe;
+        if valid { cand } else { 0 }
+    }
+
+    #[test]
+    fn half_spread_fifty_bps_on_150_usdc_is_375_000() {
+        // Oracle: $150.000000 in 6-decimal micro-USDC
+        // 150_000_000 * 50 / 20000 = 375_000 (half of 0.5% spread)
+        assert_eq!(half_spread(150_000_000, 50), 375_000);
+    }
+
+    #[test]
+    fn half_spread_clamps_at_9999_bps_regardless_of_multiplier() {
+        // Even with a 10000-bps spread and 2x multiplier (= 20000 raw),
+        // the clamp prevents effective_spread from exceeding 9999.
+        assert_eq!(clamp_effective_spread(10_000, 2), 9999);
+        // Which caps half_spread at less than half the oracle price:
+        let hs = half_spread(150_000_000, 9999);
+        assert!(hs < 150_000_000 / 2);
+        // Specifically: 9999 * 150_000_000 / 20000 = 74_992_500
+        assert_eq!(hs, 74_992_500);
+    }
+
+    #[test]
+    fn bid_ask_symmetric_around_oracle() {
+        let oracle = 150_000_000u64;
+        let hs = half_spread(oracle, 50);
+        let bid = oracle - hs;
+        let ask = oracle + hs;
+        assert_eq!(bid, 149_625_000);
+        assert_eq!(ask, 150_375_000);
+        assert_eq!(ask - oracle, oracle - bid);
+    }
+
+    #[test]
+    fn bid_size_with_zero_price_is_zero_not_undefined() {
+        // This is the critical safe-divisor test: the previous
+        // `if bid_price > 0 { q / bp }` would have invoked the division
+        // on the false branch in MPC, producing undefined output.
+        assert_eq!(bid_size(1_500_000_000, 0), 0);
+    }
+
+    #[test]
+    fn bid_size_with_nonzero_price_divides_correctly() {
+        // 1_500_000_000 micro-USDC / 149_625_000 micro-USDC-per-SOL ≈ 10 SOL
+        // (integer division truncates — exact on these inputs)
+        assert_eq!(bid_size(1_500_000_000, 149_625_000), 10);
+    }
+
+    // ---- update_balances helpers ----
+
+    /// Mirrors the saturating-subtraction delta semantics.
+    fn apply_delta(balance: u64, received: u64, sent: u64) -> u64 {
+        let available = (balance as u128) + (received as u128);
+        let clamped = if (sent as u128) > available { available } else { sent as u128 };
+        (available - clamped) as u64
+    }
+
+    #[test]
+    fn balance_update_adds_received_and_subtracts_sent() {
+        // 1000 base + 500 received - 200 sent = 1300
+        assert_eq!(apply_delta(1000, 500, 200), 1300);
+    }
+
+    #[test]
+    fn balance_update_saturates_at_zero_on_underflow() {
+        // A corrupt cranker passing sent > available must not underflow.
+        assert_eq!(apply_delta(100, 50, 200), 0);
+    }
+
+    #[test]
+    fn balance_update_handles_zero_flows() {
+        assert_eq!(apply_delta(1000, 0, 0), 1000);
+    }
+
+    // ---- reveal_performance helpers ----
+
+    /// Mirrors the u128-widening NAV computation.
+    fn total_value(base_balance: u64, last_mid_price: u64, quote_balance: u64) -> u64 {
+        let base_value =
+            ((base_balance as u128) * (last_mid_price as u128)) / 1_000_000u128;
+        let bv = if last_mid_price > 0 { base_value as u64 } else { 0 };
+        ((bv as u128) + (quote_balance as u128)) as u64
+    }
+
+    // NAV scaling convention: the circuit uses /1_000_000 on base * price.
+    // This treats (base_balance, last_mid_price) as sharing a micro-unit
+    // scale — e.g. base in 6-decimal units and price in micro-USD per base
+    // unit. Units are consistent as long as callers use the same convention
+    // on both sides. The tests below assert the arithmetic against that
+    // convention; separate work tracks whether base should also expose a
+    // native-decimals scaling helper.
+
+    #[test]
+    fn total_value_pre_first_price_is_quote_only() {
+        // last_mid_price = 0 means the base_value path contributes nothing.
+        assert_eq!(total_value(10_000_000_000, 0, 500_000_000), 500_000_000);
+    }
+
+    #[test]
+    fn total_value_combines_base_at_price_plus_quote() {
+        // Under the circuit's convention (divide by 10^6):
+        //   base_balance * last_mid_price / 10^6
+        //   = 10_000_000_000 * 150_000_000 / 1_000_000
+        //   = 1_500_000_000_000
+        // Plus quote 1_500_000_000 = 1_501_500_000_000 total.
+        assert_eq!(
+            total_value(10_000_000_000, 150_000_000, 1_500_000_000),
+            1_501_500_000_000
+        );
+    }
+
+    #[test]
+    fn total_value_u128_widening_prevents_overflow_on_large_vaults() {
+        // A 10T-lamport vault at 200-micro-USD mid price — direct u64
+        // multiplication base_balance * last_mid_price = 10^13 * 2*10^8 = 2*10^21
+        // which overflows u64 (max ~1.8*10^19). The u128 widening in
+        // total_value prevents silent corruption and downcasts safely
+        // because after /10^6 the result (2*10^15) still fits in u64.
+        let v = total_value(10_000_000_000_000, 200_000_000, 0);
+        assert_eq!(v, 2_000_000_000_000_000);
+    }
+}
+
