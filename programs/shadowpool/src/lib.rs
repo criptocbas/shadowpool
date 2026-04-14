@@ -96,6 +96,7 @@ pub mod shadowpool {
             authority: vault.authority,
             token_a_mint: vault.token_a_mint,
             token_b_mint: vault.token_b_mint,
+            slot: Clock::get()?.slot,
         });
         Ok(())
     }
@@ -160,6 +161,7 @@ pub mod shadowpool {
 
         emit!(VaultStateInitializedEvent {
             vault: vault.key(),
+            slot: Clock::get()?.slot,
         });
         Ok(())
     }
@@ -230,6 +232,20 @@ pub mod shadowpool {
 
         let vault = &mut ctx.accounts.vault;
         let slot = Clock::get()?.slot;
+
+        // If a previous quote was still unconsumed when this callback fires,
+        // we're silently overwriting it. Surface that as an event so an
+        // indexer can detect lost cranker work or competing crankers.
+        if !vault.quotes_consumed && vault.quotes_slot > 0 {
+            emit!(QuotesOverwrittenEvent {
+                vault: vault.key(),
+                previous_slot: vault.quotes_slot,
+                previous_bid_price: vault.last_bid_price,
+                previous_ask_price: vault.last_ask_price,
+                slot,
+            });
+        }
+
         vault.last_rebalance_slot = slot;
 
         // Persist revealed quotes on-chain so execute_rebalance can read them
@@ -250,6 +266,7 @@ pub mod shadowpool {
             ask_price: o.field_2,
             ask_size: o.field_3,
             should_rebalance: o.field_4 as u8,
+            slot,
         });
         Ok(())
     }
@@ -324,6 +341,7 @@ pub mod shadowpool {
 
         emit!(BalancesUpdatedEvent {
             vault: vault.key(),
+            slot: Clock::get()?.slot,
         });
         Ok(())
     }
@@ -400,6 +418,7 @@ pub mod shadowpool {
 
         emit!(StrategyUpdatedEvent {
             vault: vault.key(),
+            slot: Clock::get()?.slot,
         });
         Ok(())
     }
@@ -469,6 +488,7 @@ pub mod shadowpool {
         emit!(PerformanceRevealedEvent {
             vault: vault_key,
             total_value_in_quote: total_value,
+            slot: current_slot,
         });
         Ok(())
     }
@@ -590,6 +610,7 @@ pub mod shadowpool {
             user: ctx.accounts.user.key(),
             amount,
             shares_minted: shares_to_mint,
+            slot: Clock::get()?.slot,
         });
         Ok(())
     }
@@ -699,6 +720,7 @@ pub mod shadowpool {
             user: ctx.accounts.user.key(),
             shares_burned: shares,
             amount_out,
+            slot: Clock::get()?.slot,
         });
         Ok(())
     }
@@ -1456,17 +1478,22 @@ pub struct ExecuteRebalance<'info> {
 // EVENTS
 // ==============================================================
 
+// Every event carries `slot: u64` so an off-chain indexer can order events
+// without needing to fetch the surrounding transaction context.
+
 #[event]
 pub struct VaultCreatedEvent {
     pub vault: Pubkey,
     pub authority: Pubkey,
     pub token_a_mint: Pubkey,
     pub token_b_mint: Pubkey,
+    pub slot: u64,
 }
 
 #[event]
 pub struct VaultStateInitializedEvent {
     pub vault: Pubkey,
+    pub slot: u64,
 }
 
 #[event]
@@ -1477,22 +1504,37 @@ pub struct QuotesComputedEvent {
     pub ask_price: u64,
     pub ask_size: u64,
     pub should_rebalance: u8,
+    pub slot: u64,
+}
+
+/// Emitted when compute_quotes_callback overwrites a still-unconsumed
+/// quote. Useful for surfacing missed cranker work or competing crankers.
+#[event]
+pub struct QuotesOverwrittenEvent {
+    pub vault: Pubkey,
+    pub previous_slot: u64,
+    pub previous_bid_price: u64,
+    pub previous_ask_price: u64,
+    pub slot: u64,
 }
 
 #[event]
 pub struct BalancesUpdatedEvent {
     pub vault: Pubkey,
+    pub slot: u64,
 }
 
 #[event]
 pub struct StrategyUpdatedEvent {
     pub vault: Pubkey,
+    pub slot: u64,
 }
 
 #[event]
 pub struct PerformanceRevealedEvent {
     pub vault: Pubkey,
     pub total_value_in_quote: u64,
+    pub slot: u64,
 }
 
 #[event]
@@ -1501,6 +1543,7 @@ pub struct DepositEvent {
     pub user: Pubkey,
     pub amount: u64,
     pub shares_minted: u64,
+    pub slot: u64,
 }
 
 #[event]
@@ -1509,6 +1552,7 @@ pub struct WithdrawEvent {
     pub user: Pubkey,
     pub shares_burned: u64,
     pub amount_out: u64,
+    pub slot: u64,
 }
 
 #[event]

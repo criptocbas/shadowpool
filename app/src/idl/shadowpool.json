@@ -1740,6 +1740,19 @@
       ]
     },
     {
+      "name": "QuotesOverwrittenEvent",
+      "discriminator": [
+        223,
+        236,
+        49,
+        194,
+        179,
+        85,
+        82,
+        232
+      ]
+    },
+    {
       "name": "RebalanceExecutedEvent",
       "discriminator": [
         114,
@@ -1961,6 +1974,10 @@
           {
             "name": "vault",
             "type": "pubkey"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -2303,6 +2320,10 @@
           },
           {
             "name": "shares_minted",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
             "type": "u64"
           }
         ]
@@ -2731,6 +2752,10 @@
           {
             "name": "total_value_in_quote",
             "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -2763,6 +2788,42 @@
           {
             "name": "should_rebalance",
             "type": "u8"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "QuotesOverwrittenEvent",
+      "docs": [
+        "Emitted when compute_quotes_callback overwrites a still-unconsumed",
+        "quote. Useful for surfacing missed cranker work or competing crankers."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "previous_slot",
+            "type": "u64"
+          },
+          {
+            "name": "previous_bid_price",
+            "type": "u64"
+          },
+          {
+            "name": "previous_ask_price",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -2900,6 +2961,10 @@
           {
             "name": "vault",
             "type": "pubkey"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -3142,6 +3207,10 @@
           {
             "name": "token_b_mint",
             "type": "pubkey"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -3154,6 +3223,10 @@
           {
             "name": "vault",
             "type": "pubkey"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -3177,6 +3250,10 @@
           },
           {
             "name": "amount_out",
+            "type": "u64"
+          },
+          {
+            "name": "slot",
             "type": "u64"
           }
         ]
