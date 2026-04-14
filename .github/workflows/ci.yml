@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: Rust (check + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo check (workspace)
+        run: cargo check --workspace
+
+      - name: cargo test (unit tests)
+        # --lib skips the integration tests that need localnet + Docker.
+        # Runs the pure-function circuit tests and the Vault offset invariant.
+        run: cargo test --workspace --lib
+
+  frontend:
+    name: Frontend (tsc)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - run: yarn install --frozen-lockfile
+
+      - name: Type-check Next.js app
+        run: npx tsc --noEmit -p tsconfig.json

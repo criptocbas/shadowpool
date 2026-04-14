@@ -521,7 +521,7 @@ pub mod shadowpool {
                 .ok_or(ErrorCode::MathOverflow)?;
             u64::try_from(scaled).map_err(|_| ErrorCode::MathOverflow)?
         };
-        require!(shares_to_mint > 0, ErrorCode::InvalidAmount);
+        require!(shares_to_mint > 0, ErrorCode::ZeroShares);
 
         // Transfer quote tokens from user to vault
         token::transfer(
@@ -1423,36 +1423,47 @@ pub struct RebalanceExecutedEvent {
 
 #[error_code]
 pub enum ErrorCode {
-    #[msg("The computation was aborted")]
+    // --- Arcium MPC lifecycle ---
+    #[msg("Arcium MPC computation was aborted by the cluster")]
     AbortedComputation,
-    #[msg("Cluster not set")]
+    #[msg("Arcium cluster offset is not configured for this MXE")]
     ClusterNotSet,
-    #[msg("Unauthorized")]
+    #[msg("Caller is not authorized for this vault operation")]
     Unauthorized,
-    #[msg("Vault state not initialized")]
+    #[msg("Encrypted vault state has not been initialized — call create_vault_state first")]
     VaultNotInitialized,
-    #[msg("Invalid amount")]
+
+    // --- Arithmetic / input validation ---
+    #[msg("Amount must be greater than zero")]
     InvalidAmount,
-    #[msg("Math overflow")]
+    #[msg("Arithmetic overflow in vault math — inputs out of realistic range")]
     MathOverflow,
-    #[msg("Insufficient balance")]
+    #[msg("Insufficient quote balance on the vault for this withdrawal")]
     InsufficientBalance,
-    #[msg("Token mint mismatch")]
+    #[msg("Share calculation resulted in zero shares; amount is too small relative to NAV")]
+    ZeroShares,
+
+    // --- SPL token constraints ---
+    #[msg("Provided token mint does not match the vault's configured mint")]
     MintMismatch,
-    #[msg("Vault token account owner mismatch")]
+    #[msg("Vault token account owner does not match the vault PDA")]
     VaultOwnerMismatch,
-    #[msg("No quotes available")]
+
+    // --- Rebalance + quote lifecycle ---
+    #[msg("No quotes have been computed yet — run compute_quotes first")]
     NoQuotesAvailable,
-    #[msg("Quotes already consumed")]
+    #[msg("Quotes have already been consumed by a previous rebalance — recompute them")]
     QuotesAlreadyConsumed,
-    #[msg("Quotes are stale (>150 slots old)")]
+    #[msg("Quotes are stale (older than 150 slots, ~60s) — recompute before rebalancing")]
     QuotesStale,
-    #[msg("Rebalance not needed")]
+    #[msg("MPC indicated no rebalance is needed for the current oracle price")]
     RebalanceNotNeeded,
-    #[msg("NAV is stale after rebalance — call reveal_performance to refresh")]
-    NavStale,
-    #[msg("Slippage tolerance exceeds the 5% ceiling")]
+    #[msg("Slippage tolerance exceeds the 5% ceiling (500 bps) — lower max_slippage_bps")]
     SlippageTooHigh,
+
+    // --- NAV tracking (share pricing) ---
+    #[msg("NAV is stale after a rebalance — call reveal_performance to refresh before deposit/withdraw")]
+    NavStale,
 }
 
 // ==============================================================
