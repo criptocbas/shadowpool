@@ -86,28 +86,45 @@ mod circuits {
     ) -> QuoteOutput {
         let s = state.to_arcis();
 
-        // Widen spread when oracle confidence is low (> 1% of price)
+        // Widen spread when oracle confidence is low (> 1% of price).
+        //
+        // Arcis note: both branches of if/else always execute in MPC, so the
+        // multiplier is a straight select. No division-by-zero risk here.
         let confidence_multiplier: u16 = if oracle_confidence > oracle_price / 100 {
             2
         } else {
             1
         };
-        let effective_spread = s.spread_bps * confidence_multiplier;
+        // Bound effective spread to 9999 bps (<100%) so half_spread stays below
+        // oracle_price and bid_price cannot underflow. u16 * 2 fits in u16 up
+        // to 32767; we clamp to 9999 defensively.
+        let raw_spread = (s.spread_bps as u32) * (confidence_multiplier as u32);
+        let effective_spread: u32 = if raw_spread > 9999 { 9999 } else { raw_spread };
 
-        // Compute bid/ask from encrypted spread + public oracle price
-        let half_spread = oracle_price * (effective_spread as u64) / 20000;
+        // Compute bid/ask from encrypted spread + public oracle price.
+        // u128 intermediate prevents overflow for large oracle prices.
+        let half_spread =
+            (((oracle_price as u128) * (effective_spread as u128)) / 20000u128) as u64;
+        // effective_spread <= 9999 guarantees half_spread < oracle_price/2,
+        // so bid_price cannot underflow and ask_price won't overflow for any
+        // oracle_price <= u64::MAX/2 (which covers any realistic asset price).
         let bid_price = oracle_price - half_spread;
         let ask_price = oracle_price + half_spread;
 
-        // Compute order sizes from encrypted balances
-        let bid_size = if bid_price > 0 {
-            s.quote_balance / bid_price
-        } else {
-            0u64
-        };
+        // Compute order sizes from encrypted balances.
+        //
+        // Arcis safe-divisor pattern: both branches of the if/else run in MPC.
+        // Dividing by a secret zero is undefined behaviour (garbage output).
+        // We must ensure the division operand is never zero, then select the
+        // result afterwards. See the official arcium skill, Pattern #13.
+        let bid_valid = bid_price != 0;
+        let safe_bid_divisor = if bid_valid { bid_price } else { 1 };
+        let bid_size_candidate = s.quote_balance / safe_bid_divisor;
+        let bid_size = if bid_valid { bid_size_candidate } else { 0 };
         let ask_size = s.base_balance;
 
-        // Determine if rebalance is needed (encrypted threshold comparison)
+        // Determine if rebalance is needed (encrypted threshold comparison).
+        // u128 intermediate for the threshold_amount multiplication.
         let should_rebalance: u8 = if s.last_mid_price == 0 {
             1 // Always rebalance on first computation
         } else {
@@ -116,8 +133,9 @@ mod circuits {
             } else {
                 s.last_mid_price - oracle_price
             };
-            let threshold_amount =
-                s.last_mid_price * (s.rebalance_threshold as u64) / 10000;
+            let threshold_amount = (((s.last_mid_price as u128)
+                * (s.rebalance_threshold as u128))
+                / 10000u128) as u64;
             if price_moved > threshold_amount {
                 1
             } else {
