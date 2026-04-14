@@ -20,7 +20,8 @@ export function useDeposit(authority: PublicKey | null) {
       userTokenAccount: PublicKey,
       userShareAccount: PublicKey,
       vaultTokenB: PublicKey,
-      shareMint: PublicKey
+      shareMint: PublicKey,
+      tokenBMint: PublicKey
     ) => {
       if (!wallet || !authority) {
         setError("Wallet not connected");
@@ -37,10 +38,11 @@ export function useDeposit(authority: PublicKey | null) {
 
         const sig = await (program.methods as any)
           .deposit(new BN(amount))
-          .accounts({
+          .accountsPartial({
             user: wallet.publicKey,
             vault: vaultPda,
             userTokenAccount,
+            tokenBMint,
             vaultTokenB,
             shareMint,
             userShareAccount,

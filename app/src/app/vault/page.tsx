@@ -273,7 +273,8 @@ export default function VaultDashboard() {
       userTokenAccount,
       userShareAccount,
       vault.tokenBVault,
-      vault.shareMint
+      vault.shareMint,
+      vault.tokenBMint
     );
     refetchVault();          // sync the dashboard after a successful deposit
     setDepositAmount("");
@@ -292,7 +293,8 @@ export default function VaultDashboard() {
       userTokenAccount,
       userShareAccount,
       vault.tokenBVault,
-      vault.shareMint
+      vault.shareMint,
+      vault.tokenBMint
     );
     refetchVault();
     setDepositAmount("");

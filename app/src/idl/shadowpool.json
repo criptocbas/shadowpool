@@ -27,7 +27,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         },
         {
           "name": "sign_pda_account",
@@ -152,7 +171,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -374,6 +412,9 @@
         {
           "name": "user_token_account",
           "writable": true
+        },
+        {
+          "name": "token_b_mint"
         },
         {
           "name": "vault_token_b",
@@ -675,7 +716,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -830,7 +890,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         },
         {
           "name": "sign_pda_account",
@@ -947,7 +1026,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -991,7 +1089,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         },
         {
           "name": "sign_pda_account",
@@ -1128,7 +1245,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1341,7 +1477,26 @@
         },
         {
           "name": "vault",
-          "writable": true
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "vault.authority",
+                "account": "Vault"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -1409,6 +1564,9 @@
         {
           "name": "user_token_account",
           "writable": true
+        },
+        {
+          "name": "token_b_mint"
         },
         {
           "name": "vault_token_b",
@@ -1651,67 +1809,97 @@
     {
       "code": 6000,
       "name": "AbortedComputation",
-      "msg": "The computation was aborted"
+      "msg": "Arcium MPC computation was aborted by the cluster"
     },
     {
       "code": 6001,
       "name": "ClusterNotSet",
-      "msg": "Cluster not set"
+      "msg": "Arcium cluster offset is not configured for this MXE"
     },
     {
       "code": 6002,
       "name": "Unauthorized",
-      "msg": "Unauthorized"
+      "msg": "Caller is not authorized for this vault operation"
     },
     {
       "code": 6003,
       "name": "VaultNotInitialized",
-      "msg": "Vault state not initialized"
+      "msg": "Encrypted vault state has not been initialized — call create_vault_state first"
     },
     {
       "code": 6004,
       "name": "InvalidAmount",
-      "msg": "Invalid amount"
+      "msg": "Amount must be greater than zero"
     },
     {
       "code": 6005,
       "name": "MathOverflow",
-      "msg": "Math overflow"
+      "msg": "Arithmetic overflow in vault math — inputs out of realistic range"
     },
     {
       "code": 6006,
       "name": "InsufficientBalance",
-      "msg": "Insufficient balance"
+      "msg": "Insufficient quote balance on the vault for this withdrawal"
     },
     {
       "code": 6007,
-      "name": "MintMismatch",
-      "msg": "Token mint mismatch"
+      "name": "ZeroShares",
+      "msg": "Share calculation resulted in zero shares; amount is too small relative to NAV"
     },
     {
       "code": 6008,
-      "name": "VaultOwnerMismatch",
-      "msg": "Vault token account owner mismatch"
+      "name": "MintMismatch",
+      "msg": "Provided token mint does not match the vault's configured mint"
     },
     {
       "code": 6009,
-      "name": "NoQuotesAvailable",
-      "msg": "No quotes available"
+      "name": "VaultOwnerMismatch",
+      "msg": "Vault token account owner does not match the vault PDA"
     },
     {
       "code": 6010,
-      "name": "QuotesAlreadyConsumed",
-      "msg": "Quotes already consumed"
+      "name": "NoQuotesAvailable",
+      "msg": "No quotes have been computed yet — run compute_quotes first"
     },
     {
       "code": 6011,
-      "name": "QuotesStale",
-      "msg": "Quotes are stale (>150 slots old)"
+      "name": "QuotesAlreadyConsumed",
+      "msg": "Quotes have already been consumed by a previous rebalance — recompute them"
     },
     {
       "code": 6012,
+      "name": "QuotesStale",
+      "msg": "Quotes are stale (older than 150 slots, ~60s) — recompute before rebalancing"
+    },
+    {
+      "code": 6013,
       "name": "RebalanceNotNeeded",
-      "msg": "Rebalance not needed"
+      "msg": "MPC indicated no rebalance is needed for the current oracle price"
+    },
+    {
+      "code": 6014,
+      "name": "SlippageTooHigh",
+      "msg": "Slippage tolerance exceeds the 5% ceiling (500 bps) — lower max_slippage_bps"
+    },
+    {
+      "code": 6015,
+      "name": "NavStale",
+      "msg": "NAV is stale after a rebalance — call reveal_performance to refresh before deposit/withdraw"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidMint",
+      "msg": "Mint is not safe for vault use (e.g. has a freeze authority)"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidVaultAccount",
+      "msg": "Vault token account is not safe (delegate or close authority is set)"
+    },
+    {
+      "code": 6018,
+      "name": "DuplicateMint",
+      "msg": "Provided mints or token accounts are duplicates of one another"
     }
   ],
   "types": [
@@ -2917,6 +3105,18 @@
           },
           {
             "name": "quotes_consumed",
+            "type": "bool"
+          },
+          {
+            "name": "last_revealed_nav",
+            "type": "u64"
+          },
+          {
+            "name": "last_revealed_nav_slot",
+            "type": "u64"
+          },
+          {
+            "name": "nav_stale",
             "type": "bool"
           }
         ]

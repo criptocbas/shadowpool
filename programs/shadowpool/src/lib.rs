@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, MintTo, Transfer, Burn};
+use anchor_spl::token::{
+    self, Burn, Mint, MintTo, Token, TokenAccount, TransferChecked,
+};
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
@@ -523,20 +525,30 @@ pub mod shadowpool {
         };
         require!(shares_to_mint > 0, ErrorCode::ZeroShares);
 
-        // Transfer quote tokens from user to vault
-        token::transfer(
+        // Transfer quote tokens from user to vault. transfer_checked
+        // (vs the legacy transfer) validates mint identity and decimals,
+        // which is also a requirement for any Token-2022 mint and the
+        // current Solana docs recommendation everywhere.
+        let quote_decimals = ctx.accounts.token_b_mint.decimals;
+        token::transfer_checked(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
-                Transfer {
+                TransferChecked {
                     from: ctx.accounts.user_token_account.to_account_info(),
+                    mint: ctx.accounts.token_b_mint.to_account_info(),
                     to: ctx.accounts.vault_token_b.to_account_info(),
                     authority: ctx.accounts.user.to_account_info(),
                 },
             ),
             amount,
+            quote_decimals,
         )?;
 
-        // Mint share tokens (spTokens) to user — vault PDA is the mint authority
+        // Mint share tokens (spTokens) to user — vault PDA is the mint
+        // authority. mint_to (rather than mint_to_checked) is fine here:
+        // the share mint is our own program-owned mint, decimals are
+        // fixed at vault creation, and Token-2022 compatibility for share
+        // tokens is not on the roadmap.
         let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
         token::mint_to(
             CpiContext::new_with_signer(
@@ -646,19 +658,23 @@ pub mod shadowpool {
             shares,
         )?;
 
-        // Transfer quote tokens from vault to user — vault PDA signs
+        // Transfer quote tokens from vault to user — vault PDA signs.
+        // transfer_checked validates mint + decimals; required for Token-2022.
+        let quote_decimals = ctx.accounts.token_b_mint.decimals;
         let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
-        token::transfer(
+        token::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
-                Transfer {
+                TransferChecked {
                     from: ctx.accounts.vault_token_b.to_account_info(),
+                    mint: ctx.accounts.token_b_mint.to_account_info(),
                     to: ctx.accounts.user_token_account.to_account_info(),
                     authority: ctx.accounts.vault.to_account_info(),
                 },
                 signer_seeds,
             ),
             amount_out,
+            quote_decimals,
         )?;
 
         // Reload after CPI so the post-transfer balance is visible to any
@@ -1337,6 +1353,10 @@ pub struct Deposit<'info> {
         constraint = user_token_account.owner == user.key() @ ErrorCode::Unauthorized,
     )]
     pub user_token_account: Account<'info, TokenAccount>,
+    // Quote mint, required by transfer_checked. Pinned to vault.token_b_mint
+    // to prevent a caller from substituting a different mint at call time.
+    #[account(address = vault.token_b_mint @ ErrorCode::MintMismatch)]
+    pub token_b_mint: Account<'info, Mint>,
     #[account(
         mut,
         address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
@@ -1372,6 +1392,9 @@ pub struct Withdraw<'info> {
         constraint = user_token_account.owner == user.key() @ ErrorCode::Unauthorized,
     )]
     pub user_token_account: Account<'info, TokenAccount>,
+    // Quote mint, required by transfer_checked.
+    #[account(address = vault.token_b_mint @ ErrorCode::MintMismatch)]
+    pub token_b_mint: Account<'info, Mint>,
     #[account(
         mut,
         address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,

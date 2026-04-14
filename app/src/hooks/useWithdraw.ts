@@ -20,7 +20,8 @@ export function useWithdraw(authority: PublicKey | null) {
       userTokenAccount: PublicKey,
       userShareAccount: PublicKey,
       vaultTokenB: PublicKey,
-      shareMint: PublicKey
+      shareMint: PublicKey,
+      tokenBMint: PublicKey
     ) => {
       if (!wallet || !authority) {
         setError("Wallet not connected");
@@ -37,10 +38,11 @@ export function useWithdraw(authority: PublicKey | null) {
 
         const sig = await (program.methods as any)
           .withdraw(new BN(shares))
-          .accounts({
+          .accountsPartial({
             user: wallet.publicKey,
             vault: vaultPda,
             userTokenAccount,
+            tokenBMint,
             vaultTokenB,
             shareMint,
             userShareAccount,
