@@ -1228,21 +1228,39 @@ pub struct InitializeVault<'info> {
         bump,
     )]
     pub vault: Box<Account<'info, Vault>>,
+    // Token A and B mints must be distinct so that we never accidentally
+    // create a "self-pair" (e.g. SOL/SOL) where deposit/withdraw arithmetic
+    // would conflate the two sides.
+    #[account(
+        constraint = token_a_mint.key() != token_b_mint.key() @ ErrorCode::DuplicateMint,
+    )]
     pub token_a_mint: Account<'info, Mint>,
     pub token_b_mint: Account<'info, Mint>,
+    // Vault token accounts must be (a) owned by the vault PDA, (b) of the
+    // expected mint, AND (c) free of any side-channel that would let a
+    // creator drain funds out-of-band: no delegate, no close authority.
     #[account(
         constraint = token_a_vault.mint == token_a_mint.key() @ ErrorCode::MintMismatch,
         constraint = token_a_vault.owner == vault.key() @ ErrorCode::VaultOwnerMismatch,
+        constraint = token_a_vault.delegate.is_none() @ ErrorCode::InvalidVaultAccount,
+        constraint = token_a_vault.close_authority.is_none() @ ErrorCode::InvalidVaultAccount,
+        constraint = token_a_vault.key() != token_b_vault.key() @ ErrorCode::DuplicateMint,
     )]
     pub token_a_vault: Account<'info, TokenAccount>,
     #[account(
         constraint = token_b_vault.mint == token_b_mint.key() @ ErrorCode::MintMismatch,
         constraint = token_b_vault.owner == vault.key() @ ErrorCode::VaultOwnerMismatch,
+        constraint = token_b_vault.delegate.is_none() @ ErrorCode::InvalidVaultAccount,
+        constraint = token_b_vault.close_authority.is_none() @ ErrorCode::InvalidVaultAccount,
     )]
     pub token_b_vault: Account<'info, TokenAccount>,
+    // Share mint must be (a) authority = vault PDA, (b) zero supply at init,
+    // (c) NO freeze authority (otherwise the creator could freeze user
+    // share tokens after the fact and lock LPs out of withdrawals).
     #[account(
         constraint = share_mint.mint_authority.contains(&vault.key()) @ ErrorCode::VaultOwnerMismatch,
         constraint = share_mint.supply == 0 @ ErrorCode::InvalidAmount,
+        constraint = share_mint.freeze_authority.is_none() @ ErrorCode::InvalidMint,
     )]
     pub share_mint: Account<'info, Mint>,
     pub token_program: Program<'info, Token>,
@@ -1464,6 +1482,14 @@ pub enum ErrorCode {
     // --- NAV tracking (share pricing) ---
     #[msg("NAV is stale after a rebalance — call reveal_performance to refresh before deposit/withdraw")]
     NavStale,
+
+    // --- Vault initialization safety ---
+    #[msg("Mint is not safe for vault use (e.g. has a freeze authority)")]
+    InvalidMint,
+    #[msg("Vault token account is not safe (delegate or close authority is set)")]
+    InvalidVaultAccount,
+    #[msg("Provided mints or token accounts are duplicates of one another")]
+    DuplicateMint,
 }
 
 // ==============================================================
