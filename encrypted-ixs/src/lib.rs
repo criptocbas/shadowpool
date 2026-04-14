@@ -178,8 +178,34 @@ mod circuits {
         new_mid_price: u64,
     ) -> Enc<Mxe, VaultState> {
         let mut s = state.to_arcis();
-        s.base_balance = s.base_balance + base_received - base_sent;
-        s.quote_balance = s.quote_balance + quote_received - quote_sent;
+
+        // Apply deltas with u128 intermediates + saturating semantics so a
+        // malformed caller cannot underflow the encrypted balance. Both
+        // branches of every if/else run in MPC, so we use the select-after
+        // -compute pattern (never compute a subtraction that would wrap).
+        //
+        // Real execution should never hit the clamp — the cranker is expected
+        // to pass deltas consistent with what was actually traded. The clamp
+        // is a safety net against corrupted inputs.
+
+        let base_available = (s.base_balance as u128) + (base_received as u128);
+        let base_sent_u = base_sent as u128;
+        let base_sent_clamped = if base_sent_u > base_available {
+            base_available
+        } else {
+            base_sent_u
+        };
+        s.base_balance = (base_available - base_sent_clamped) as u64;
+
+        let quote_available = (s.quote_balance as u128) + (quote_received as u128);
+        let quote_sent_u = quote_sent as u128;
+        let quote_sent_clamped = if quote_sent_u > quote_available {
+            quote_available
+        } else {
+            quote_sent_u
+        };
+        s.quote_balance = (quote_available - quote_sent_clamped) as u64;
+
         s.last_mid_price = new_mid_price;
         state.owner.from_arcis(s)
     }
@@ -225,12 +251,27 @@ mod circuits {
     #[instruction]
     pub fn reveal_performance(state: Enc<Mxe, VaultState>) -> u64 {
         let s = state.to_arcis();
-        let base_value = if s.last_mid_price > 0 {
-            s.base_balance * s.last_mid_price / 1_000_000
+
+        // Convert base holdings into quote-denominated value at the last mid
+        // price. Use u128 throughout: base_balance * last_mid_price can
+        // exceed u64::MAX for large vaults with high-priced assets
+        // (e.g. 10M SOL * $1000 * 10^6 scale = 10^25), and the division by
+        // 1_000_000 is exact at u128.
+        //
+        // Arcis note: both branches of the if/else run in MPC anyway, so the
+        // guard on last_mid_price == 0 is purely a selector.
+        let base_value_u128 =
+            ((s.base_balance as u128) * (s.last_mid_price as u128)) / 1_000_000u128;
+        let base_value: u64 = if s.last_mid_price > 0 {
+            base_value_u128 as u64
         } else {
-            0u64
+            0
         };
-        let total = base_value + s.quote_balance;
+
+        // Total can overflow u64 for degenerate inputs; u128 + downcast is
+        // safe as long as the sum doesn't exceed u64::MAX (which holds for
+        // any realistic vault).
+        let total = ((base_value as u128) + (s.quote_balance as u128)) as u64;
         total.reveal()
     }
 }
