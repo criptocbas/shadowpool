@@ -85,6 +85,9 @@ pub mod shadowpool {
         vault.last_should_rebalance = 0;
         vault.quotes_slot = 0;
         vault.quotes_consumed = true;
+        vault.last_revealed_nav = 0;
+        vault.last_revealed_nav_slot = 0;
+        vault.nav_stale = false;
 
         emit!(VaultCreatedEvent {
             vault: vault.key(),
@@ -452,8 +455,17 @@ pub mod shadowpool {
             Err(_) => return Err(ErrorCode::AbortedComputation.into()),
         };
 
+        // Persist the MPC-attested NAV so deposit/withdraw can price shares
+        // off it, and clear the stale flag so user flows unblock.
+        let current_slot = Clock::get()?.slot;
+        let vault_key = ctx.accounts.vault.key();
+        let vault = &mut ctx.accounts.vault;
+        vault.last_revealed_nav = total_value;
+        vault.last_revealed_nav_slot = current_slot;
+        vault.nav_stale = false;
+
         emit!(PerformanceRevealedEvent {
-            vault: ctx.accounts.vault.key(),
+            vault: vault_key,
             total_value_in_quote: total_value,
         });
         Ok(())
@@ -471,16 +483,45 @@ pub mod shadowpool {
         let bump = ctx.accounts.vault.bump;
         let vault_key = ctx.accounts.vault.key();
 
-        // Calculate shares: first deposit is 1:1, subsequent are pro-rata
+        // NAV-aware share pricing.
+        //
+        // Pricing basis:
+        //   - If the vault has a revealed NAV (last_revealed_nav > 0), use it.
+        //     This is authoritative post-trade because the MPC-attested NAV
+        //     reflects actual vault composition (base value + quote value).
+        //   - Otherwise we're pre-first-reveal: no trades have happened, so
+        //     total_deposits_b == NAV and is safe to use.
+        //
+        // Staleness guard:
+        //   Once execute_rebalance has run, nav_stale is true until the next
+        //   reveal_performance_callback. Depositing against a stale NAV would
+        //   mis-price shares (the revealed NAV doesn't reflect post-trade
+        //   holdings). Reject and require a refresh.
+        require!(!ctx.accounts.vault.nav_stale, ErrorCode::NavStale);
+
+        let uses_revealed_nav = ctx.accounts.vault.last_revealed_nav > 0;
+        let nav_basis = if uses_revealed_nav {
+            ctx.accounts.vault.last_revealed_nav
+        } else {
+            ctx.accounts.vault.total_deposits_b
+        };
+
+        // Calculate shares to mint. First deposit is 1:1 (bootstraps share
+        // supply). Subsequent deposits dilute pro-rata against the nav_basis.
         let shares_to_mint = if ctx.accounts.vault.total_shares == 0 {
             amount
         } else {
-            amount
-                .checked_mul(ctx.accounts.vault.total_shares)
+            // u128 intermediate prevents overflow on amount * total_shares
+            // for large vaults; downcast is safe because (amount / nav_basis)
+            // <= 1 in typical conditions.
+            let scaled = (amount as u128)
+                .checked_mul(ctx.accounts.vault.total_shares as u128)
                 .ok_or(ErrorCode::MathOverflow)?
-                .checked_div(ctx.accounts.vault.total_deposits_b)
-                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(nav_basis as u128)
+                .ok_or(ErrorCode::MathOverflow)?;
+            u64::try_from(scaled).map_err(|_| ErrorCode::MathOverflow)?
         };
+        require!(shares_to_mint > 0, ErrorCode::InvalidAmount);
 
         // Transfer quote tokens from user to vault
         token::transfer(
@@ -515,6 +556,17 @@ pub mod shadowpool {
         vault.total_shares = vault.total_shares.checked_add(shares_to_mint).ok_or(ErrorCode::MathOverflow)?;
         vault.total_deposits_b = vault.total_deposits_b.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
 
+        // NAV tracking: the deposit adds exactly `amount` quote tokens to the
+        // vault, so a revealed NAV stays accurate after this deterministic
+        // delta. Only update when we have a revealed NAV to track; the
+        // pre-reveal path uses total_deposits_b which we already updated.
+        if uses_revealed_nav {
+            vault.last_revealed_nav = vault
+                .last_revealed_nav
+                .checked_add(amount)
+                .ok_or(ErrorCode::MathOverflow)?;
+        }
+
         emit!(DepositEvent {
             vault: vault_key,
             user: ctx.accounts.user.key(),
@@ -532,19 +584,43 @@ pub mod shadowpool {
         require!(shares > 0, ErrorCode::InvalidAmount);
         require!(ctx.accounts.vault.total_shares > 0, ErrorCode::InsufficientBalance);
 
+        // Mirror the NAV staleness check from deposit — withdrawing against
+        // a stale NAV would let an LP extract more than their share.
+        require!(!ctx.accounts.vault.nav_stale, ErrorCode::NavStale);
+
         // Extract values before mutable borrow
         let authority_key = ctx.accounts.vault.authority;
         let bump = ctx.accounts.vault.bump;
         let vault_key = ctx.accounts.vault.key();
 
-        // Calculate quote tokens to return: shares / total_shares * total_deposits_b
-        let amount_out = (shares as u128)
-            .checked_mul(ctx.accounts.vault.total_deposits_b as u128)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(ctx.accounts.vault.total_shares as u128)
-            .ok_or(ErrorCode::MathOverflow)? as u64;
+        // NAV-aware exit pricing: shares_share_of_nav = shares / total_shares.
+        // amount_out = shares_share_of_nav * nav_basis.
+        let uses_revealed_nav = ctx.accounts.vault.last_revealed_nav > 0;
+        let nav_basis = if uses_revealed_nav {
+            ctx.accounts.vault.last_revealed_nav
+        } else {
+            ctx.accounts.vault.total_deposits_b
+        };
+
+        let amount_out = u64::try_from(
+            (shares as u128)
+                .checked_mul(nav_basis as u128)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(ctx.accounts.vault.total_shares as u128)
+                .ok_or(ErrorCode::MathOverflow)?,
+        )
+        .map_err(|_| ErrorCode::MathOverflow)?;
 
         require!(amount_out > 0, ErrorCode::InvalidAmount);
+        // Defence-in-depth: a NAV-based withdrawal can exceed on-hand quote
+        // if the vault is holding value primarily in base tokens post-trade.
+        // Without a DEX CPI to liquidate, cap to available quote balance.
+        // Post-CPI integration, this can be relaxed or replaced by partial
+        // fills in base + quote.
+        require!(
+            amount_out <= ctx.accounts.vault.total_deposits_b,
+            ErrorCode::InsufficientBalance
+        );
 
         // Burn user's share tokens
         token::burn(
@@ -578,6 +654,14 @@ pub mod shadowpool {
         let vault = &mut ctx.accounts.vault;
         vault.total_shares = vault.total_shares.checked_sub(shares).ok_or(ErrorCode::MathOverflow)?;
         vault.total_deposits_b = vault.total_deposits_b.checked_sub(amount_out).ok_or(ErrorCode::MathOverflow)?;
+
+        // Mirror the deposit's NAV tracking: the withdrawal removes exactly
+        // `amount_out` quote tokens, so the revealed NAV decrements by the
+        // same amount. Saturating because rounding could otherwise leave a
+        // sub-satoshi residual.
+        if uses_revealed_nav {
+            vault.last_revealed_nav = vault.last_revealed_nav.saturating_sub(amount_out);
+        }
 
         emit!(WithdrawEvent {
             vault: vault_key,
@@ -650,9 +734,15 @@ pub mod shadowpool {
             max_slippage_bps, bid_min_out, ask_min_out,
         );
 
-        // Mark quotes as consumed so they can't be replayed
+        // Mark quotes as consumed so they can't be replayed, and flag NAV as
+        // stale — the (eventual) DEX CPI will change vault composition in a
+        // way the previously-revealed NAV no longer reflects. Deposits and
+        // withdrawals will be blocked until reveal_performance produces a
+        // fresh NAV attestation.
         let vault = &mut ctx.accounts.vault;
         vault.quotes_consumed = true;
+        vault.nav_stale = true;
+        vault.last_rebalance_slot = current_slot;
 
         emit!(RebalanceExecutedEvent {
             vault: vault.key(),
@@ -694,6 +784,17 @@ pub struct Vault {
     pub last_should_rebalance: u8,
     pub quotes_slot: u64,        // Slot when quotes were computed (staleness check)
     pub quotes_consumed: bool,   // True after execute_rebalance uses the quotes
+    // --- NAV tracking (authoritative share-pricing basis post-trade) ---
+    // Until the first reveal_performance completes, last_revealed_nav is 0
+    // and deposits/withdrawals price off total_deposits_b (equivalent to NAV
+    // pre-trade). After the first reveal it holds the last MPC-attested NAV.
+    // deposit and withdraw keep it in sync with their deterministic deltas;
+    // execute_rebalance flips nav_stale=true when the vault composition has
+    // actually changed, requiring a fresh reveal before more deposits or
+    // withdrawals are allowed.
+    pub last_revealed_nav: u64,
+    pub last_revealed_nav_slot: u64,
+    pub nav_stale: bool,
 }
 
 // ==============================================================
@@ -1339,4 +1440,6 @@ pub enum ErrorCode {
     QuotesStale,
     #[msg("Rebalance not needed")]
     RebalanceNotNeeded,
+    #[msg("NAV is stale after rebalance — call reveal_performance to refresh")]
+    NavStale,
 }

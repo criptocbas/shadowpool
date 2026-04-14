@@ -28,6 +28,10 @@ export interface VaultData {
   lastShouldRebalance: number;
   quotesSlot: BN;
   quotesConsumed: boolean;
+  // NAV tracking (authoritative post-trade share-pricing basis)
+  lastRevealedNav: BN;
+  lastRevealedNavSlot: BN;
+  navStale: boolean;
 }
 
 export function useVault(authority: PublicKey | null) {
