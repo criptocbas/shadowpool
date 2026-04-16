@@ -2799,7 +2799,7 @@
     {
       "name": "QuotesOverwrittenEvent",
       "docs": [
-        "Emitted when compute_quotes_callback overwrites a still-unconsumed",
+        "Emitted when `compute_quotes_callback` overwrites a still-unconsumed",
         "quote. Useful for surfacing missed cranker work or competing crankers."
       ],
       "type": {
@@ -3079,6 +3079,23 @@
     },
     {
       "name": "Vault",
+      "docs": [
+        "The vault account.",
+        "",
+        "**Byte layout is load-bearing.** The MPC cluster reads encrypted state",
+        "directly from this account's raw bytes at",
+        "`constants::ENCRYPTED_STATE_OFFSET` (249) via `.account(...)` in",
+        "ArgBuilder. Do not reorder fields above `encrypted_state` without",
+        "updating both the constant and the invariant test in `lib.rs`.",
+        "",
+        "Field groups, in order:",
+        "1. Identity (`bump`, `authority`, mint/vault/share pubkeys).",
+        "2. Bookkeeping counters (`total_shares`, `total_deposits_*`, slot).",
+        "3. MPC state nonce + `encrypted_state` ciphertexts.",
+        "4. Quote persistence (plaintext after MPC reveal; appended after",
+        "`encrypted_state` to preserve the offset).",
+        "5. NAV tracking (authoritative share-pricing basis post-trade)."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
@@ -3166,10 +3183,18 @@
           },
           {
             "name": "quotes_slot",
+            "docs": [
+              "Slot when quotes were computed; used for staleness check in",
+              "`execute_rebalance`."
+            ],
             "type": "u64"
           },
           {
             "name": "quotes_consumed",
+            "docs": [
+              "True once `execute_rebalance` consumes the quotes. Prevents replay",
+              "of the same quote cycle."
+            ],
             "type": "bool"
           },
           {
