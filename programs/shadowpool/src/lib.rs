@@ -5,20 +5,8 @@ use anchor_spl::token::{
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
-// Computation definition offsets — one per Arcis circuit
-const COMP_DEF_OFFSET_INIT_VAULT_STATE: u32 = comp_def_offset("init_vault_state");
-const COMP_DEF_OFFSET_COMPUTE_QUOTES: u32 = comp_def_offset("compute_quotes");
-const COMP_DEF_OFFSET_UPDATE_BALANCES: u32 = comp_def_offset("update_balances");
-const COMP_DEF_OFFSET_UPDATE_STRATEGY: u32 = comp_def_offset("update_strategy");
-const COMP_DEF_OFFSET_REVEAL_PERFORMANCE: u32 = comp_def_offset("reveal_performance");
-
-// Vault encrypted state layout
-// Byte offset: 8 (disc) + 1 (bump) + 32 (authority) + 32 (token_a_mint) + 32 (token_b_mint)
-//   + 32 (token_a_vault) + 32 (token_b_vault) + 32 (share_mint)
-//   + 8 (total_shares) + 8 (total_deposits_a) + 8 (total_deposits_b)
-//   + 8 (last_rebalance_slot) + 16 (state_nonce) = 249
-const ENCRYPTED_STATE_OFFSET: u32 = 249;
-const ENCRYPTED_STATE_SIZE: u32 = 32 * 5; // 5 ciphertexts × 32 bytes
+pub mod constants;
+use constants::*;
 
 declare_id!("BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g");
 
@@ -739,7 +727,6 @@ pub mod shadowpool {
         // Cap slippage to 5% so a malicious or buggy cranker cannot quietly
         // pass 100% and nullify the slippage protection. Institutional MM
         // strategies rarely need >2% tolerance; 5% is the safety ceiling.
-        const MAX_ALLOWED_SLIPPAGE_BPS: u16 = 500;
         require!(
             max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS,
             ErrorCode::SlippageTooHigh
@@ -754,7 +741,7 @@ pub mod shadowpool {
         // Staleness check: quotes must be from within the last 150 slots (~1 minute)
         let current_slot = Clock::get()?.slot;
         let age = current_slot.saturating_sub(vault.quotes_slot);
-        require!(age <= 150, ErrorCode::QuotesStale);
+        require!(age <= QUOTE_STALENESS_SLOTS, ErrorCode::QuotesStale);
 
         // Read the persisted quotes
         let bid_price = vault.last_bid_price;
