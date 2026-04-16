@@ -4,8 +4,13 @@ import { useCallback, useState } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
+import { Buffer } from "buffer";
 import { getProgram } from "@/lib/program";
 import { getVaultPDA, DEVNET_CLUSTER_OFFSET } from "@/lib/constants";
+// Browser-safe PDA helpers (reimplemented from @arcium-hq/client). The
+// upstream client imports `fs` unconditionally at ESM load time which
+// breaks `next build`. See lib/arcium-pdas.ts for the reverse-engineered
+// seeds.
 import {
   getMXEAccAddress,
   getMempoolAccAddress,
@@ -14,8 +19,18 @@ import {
   getCompDefAccOffset,
   getComputationAccAddress,
   getClusterAccAddress,
-} from "@arcium-hq/client";
-import { randomBytes } from "crypto";
+} from "@/lib/arcium-pdas";
+
+/**
+ * Generate cryptographically random bytes in the browser. Equivalent
+ * to Node's `crypto.randomBytes` but works in any environment that
+ * exposes Web Crypto (all modern browsers + modern Node).
+ */
+function webRandomBytes(size: number): Uint8Array {
+  const arr = new Uint8Array(size);
+  crypto.getRandomValues(arr);
+  return arr;
+}
 
 export function useComputeQuotes(authority: PublicKey | null) {
   const { connection } = useConnection();
@@ -39,11 +54,10 @@ export function useComputeQuotes(authority: PublicKey | null) {
         const program = getProgram(connection, wallet);
         const [vaultPda] = getVaultPDA(authority);
 
-        const computationOffset = new BN(randomBytes(8), "hex");
+        const computationOffset = new BN(Buffer.from(webRandomBytes(8)));
         const clusterAccount = getClusterAccAddress(DEVNET_CLUSTER_OFFSET);
-        const compDefOffset = Buffer.from(
-          getCompDefAccOffset("compute_quotes")
-        ).readUInt32LE();
+        const compDefOffsetBytes = await getCompDefAccOffset("compute_quotes");
+        const compDefOffset = compDefOffsetBytes.readUInt32LE();
 
         const sig = await program.methods
           .computeQuotes(
