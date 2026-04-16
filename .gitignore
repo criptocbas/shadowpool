@@ -17,3 +17,6 @@ submission/
 .env
 .env.local
 .env.*.local
+
+# Next.js build output
+.next/
