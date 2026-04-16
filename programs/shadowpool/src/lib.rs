@@ -1,5 +1,9 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token_interface::{self, Burn, MintTo, TransferChecked};
+use anchor_spl::token_2022::spl_token_2022::{
+    extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
+    state::Mint as SplMint,
+};
+use anchor_spl::token_interface::{self, Burn, Mint, MintTo, TransferChecked};
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
@@ -13,6 +17,54 @@ use constants::*;
 use contexts::*;
 use errors::ErrorCode;
 use events::*;
+
+/// Token-2022 mint extensions that are incompatible with vault custody or
+/// share-token correctness. Enforced at `initialize_vault` against every
+/// user-supplied mint (`token_a_mint`, `token_b_mint`, `share_mint`).
+///
+/// Rationale per extension:
+/// - **PermanentDelegate**: perpetual authority can move vault-held tokens
+///   out-of-band; breaks the creator-time-trust story.
+/// - **TransferFeeConfig**: transfers arrive with less than `amount`;
+///   breaks the share-pricing bookkeeping.
+/// - **ConfidentialTransferMint**: balances live in ciphertext on the
+///   token account; `vault_token_b.amount` reads become unreliable.
+/// - **DefaultAccountState**: newly created token accounts for this mint
+///   may be frozen, bricking deposits.
+/// - **NonTransferable**: withdrawal transfers would fail.
+/// - **TransferHook**: an untrusted third-party program runs on every
+///   transfer; can fail, re-enter, or censor.
+const DISALLOWED_MINT_EXTENSIONS: &[ExtensionType] = &[
+    ExtensionType::PermanentDelegate,
+    ExtensionType::TransferFeeConfig,
+    ExtensionType::ConfidentialTransferMint,
+    ExtensionType::DefaultAccountState,
+    ExtensionType::NonTransferable,
+    ExtensionType::TransferHook,
+];
+
+/// Rejects any mint that carries a disallowed Token-2022 extension. Legacy
+/// SPL Token mints (owner = `spl_token::ID`) have no extensions and pass
+/// trivially.
+fn enforce_mint_extension_allowlist(mint: &InterfaceAccount<Mint>) -> Result<()> {
+    let account_info = mint.to_account_info();
+    // Legacy SPL Token mints cannot carry extensions — skip the parse.
+    if *account_info.owner == anchor_spl::token::ID {
+        return Ok(());
+    }
+    let data = account_info.try_borrow_data()?;
+    let parsed = StateWithExtensions::<SplMint>::unpack(&data)
+        .map_err(|_| error!(ErrorCode::InvalidMint))?;
+    let extensions = parsed
+        .get_extension_types()
+        .map_err(|_| error!(ErrorCode::InvalidMint))?;
+    for ext in extensions {
+        if DISALLOWED_MINT_EXTENSIONS.contains(&ext) {
+            return Err(error!(ErrorCode::DisallowedMintExtension));
+        }
+    }
+    Ok(())
+}
 
 declare_id!("BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g");
 
@@ -73,16 +125,28 @@ pub mod shadowpool {
 
     /// Creates the vault PDA + bookkeeping fields.
     ///
-    /// Runs the five creator-time safety checks via account constraints:
+    /// Runs the creator-time safety checks via account constraints + an
+    /// explicit Token-2022 extension allow-list inside the handler:
     /// (1) distinct token A/B mints, (2) vault token accounts with no
     /// delegate and no close authority, (3) share mint with the vault
-    /// PDA as mint authority, zero supply, and no freeze authority.
-    /// After creation the encrypted state is still all zeros — the
-    /// owner must call `create_vault_state` (MPC) to install the
-    /// initial strategy parameters.
+    /// PDA as mint authority, zero supply, and no freeze authority,
+    /// (4) every mint (token_a, token_b, share) free of Token-2022
+    /// extensions that would compromise custody or accounting
+    /// (PermanentDelegate, TransferFeeConfig, ConfidentialTransferMint,
+    /// DefaultAccountState, NonTransferable, TransferHook). After
+    /// creation the encrypted state is still all zeros — the owner
+    /// must call `create_vault_state` (MPC) to install the initial
+    /// strategy parameters.
     ///
     /// Emits `VaultCreatedEvent` with slot.
     pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+        // Reject mints carrying Token-2022 extensions that break custody
+        // or accounting. Done in the handler (not a constraint) because
+        // extension parsing requires borrowing the raw account data.
+        enforce_mint_extension_allowlist(&ctx.accounts.token_a_mint)?;
+        enforce_mint_extension_allowlist(&ctx.accounts.token_b_mint)?;
+        enforce_mint_extension_allowlist(&ctx.accounts.share_mint)?;
+
         let vault = &mut ctx.accounts.vault;
         vault.bump = ctx.bumps.vault;
         vault.authority = ctx.accounts.authority.key();

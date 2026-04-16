@@ -62,4 +62,8 @@ pub enum ErrorCode {
     // --- NAV basis degenerate state ---
     #[msg("NAV basis is zero while shares are outstanding — recover with reveal_performance")]
     ZeroNavBasis,
+
+    // --- Token-2022 extension allow-list ---
+    #[msg("Mint carries a Token-2022 extension that is not allowed for vault use")]
+    DisallowedMintExtension,
 }
