@@ -7,9 +7,11 @@ use arcium_client::idl::arcium::types::CallbackAccount;
 
 pub mod constants;
 pub mod errors;
+pub mod events;
 pub mod state;
 use constants::*;
 use errors::ErrorCode;
+use events::*;
 use state::*;
 
 declare_id!("BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g");
@@ -1422,97 +1424,6 @@ pub struct ExecuteRebalance<'info> {
     // pub bin_array_lower: ...
     // pub bin_array_upper: ...
     // etc.
-}
-
-// ==============================================================
-// EVENTS
-// ==============================================================
-
-// Every event carries `slot: u64` so an off-chain indexer can order events
-// without needing to fetch the surrounding transaction context.
-
-#[event]
-pub struct VaultCreatedEvent {
-    pub vault: Pubkey,
-    pub authority: Pubkey,
-    pub token_a_mint: Pubkey,
-    pub token_b_mint: Pubkey,
-    pub slot: u64,
-}
-
-#[event]
-pub struct VaultStateInitializedEvent {
-    pub vault: Pubkey,
-    pub slot: u64,
-}
-
-#[event]
-pub struct QuotesComputedEvent {
-    pub vault: Pubkey,
-    pub bid_price: u64,
-    pub bid_size: u64,
-    pub ask_price: u64,
-    pub ask_size: u64,
-    pub should_rebalance: u8,
-    pub slot: u64,
-}
-
-/// Emitted when compute_quotes_callback overwrites a still-unconsumed
-/// quote. Useful for surfacing missed cranker work or competing crankers.
-#[event]
-pub struct QuotesOverwrittenEvent {
-    pub vault: Pubkey,
-    pub previous_slot: u64,
-    pub previous_bid_price: u64,
-    pub previous_ask_price: u64,
-    pub slot: u64,
-}
-
-#[event]
-pub struct BalancesUpdatedEvent {
-    pub vault: Pubkey,
-    pub slot: u64,
-}
-
-#[event]
-pub struct StrategyUpdatedEvent {
-    pub vault: Pubkey,
-    pub slot: u64,
-}
-
-#[event]
-pub struct PerformanceRevealedEvent {
-    pub vault: Pubkey,
-    pub total_value_in_quote: u64,
-    pub slot: u64,
-}
-
-#[event]
-pub struct DepositEvent {
-    pub vault: Pubkey,
-    pub user: Pubkey,
-    pub amount: u64,
-    pub shares_minted: u64,
-    pub slot: u64,
-}
-
-#[event]
-pub struct WithdrawEvent {
-    pub vault: Pubkey,
-    pub user: Pubkey,
-    pub shares_burned: u64,
-    pub amount_out: u64,
-    pub slot: u64,
-}
-
-#[event]
-pub struct RebalanceExecutedEvent {
-    pub vault: Pubkey,
-    pub bid_price: u64,
-    pub bid_size: u64,
-    pub ask_price: u64,
-    pub ask_size: u64,
-    pub slot: u64,
 }
 
 // ==============================================================
