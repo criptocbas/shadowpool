@@ -58,4 +58,8 @@ pub enum ErrorCode {
     InvalidVaultAccount,
     #[msg("Provided mints or token accounts are duplicates of one another")]
     DuplicateMint,
+
+    // --- NAV basis degenerate state ---
+    #[msg("NAV basis is zero while shares are outstanding — recover with reveal_performance")]
+    ZeroNavBasis,
 }

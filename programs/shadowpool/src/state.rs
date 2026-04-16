@@ -31,8 +31,14 @@ pub struct Vault {
 
     // --- Bookkeeping ---
     pub total_shares: u64,
+    /// Reserved for future base-side deposits. Not written today (deposits
+    /// are quote-only by design). Kept in the preamble so that enabling
+    /// base-side deposits later does not shift `ENCRYPTED_STATE_OFFSET`.
     pub total_deposits_a: u64,
     pub total_deposits_b: u64,
+    /// Slot when the most recent `execute_rebalance` executed. Written
+    /// only by `execute_rebalance`; `compute_quotes_callback` tracks its
+    /// own slot separately in `quotes_slot` below.
     pub last_rebalance_slot: u64,
 
     // --- MPC state (read directly by the Arcium cluster; see note above) ---

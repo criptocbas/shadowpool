@@ -281,8 +281,6 @@ pub mod shadowpool {
             });
         }
 
-        vault.last_rebalance_slot = slot;
-
         // Persist revealed quotes on-chain so execute_rebalance can read them
         vault.last_bid_price = o.field_0;
         vault.last_bid_size = o.field_1;
@@ -604,9 +602,16 @@ pub mod shadowpool {
 
         // Calculate shares to mint. First deposit is 1:1 (bootstraps share
         // supply). Subsequent deposits dilute pro-rata against the nav_basis.
+        //
+        // If shares are outstanding but nav_basis is zero (edge case: a post-
+        // rebalance state where encrypted balances hold the position but the
+        // pre-reveal quote counter is drained), we'd otherwise divide by zero
+        // and surface a confusing MathOverflow. Fail fast with a clearer
+        // error so the caller knows to run reveal_performance.
         let shares_to_mint = if ctx.accounts.vault.total_shares == 0 {
             amount
         } else {
+            require!(nav_basis > 0, ErrorCode::ZeroNavBasis);
             // u128 intermediate prevents overflow on amount * total_shares
             // for large vaults; downcast is safe because (amount / nav_basis)
             // <= 1 in typical conditions.
@@ -725,6 +730,7 @@ pub mod shadowpool {
         } else {
             ctx.accounts.vault.total_deposits_b
         };
+        require!(nav_basis > 0, ErrorCode::ZeroNavBasis);
 
         let amount_out = u64::try_from(
             (shares as u128)
