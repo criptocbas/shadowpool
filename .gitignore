@@ -12,3 +12,8 @@ artifacts/
 
 # Submission prep — local-only, has its own private git repo
 submission/
+
+# Local-only environment (Helius API keys, RPC URLs, etc.)
+.env
+.env.local
+.env.*.local

@@ -8,9 +8,16 @@ skip-lint = false
 [programs.localnet]
 shadowpool = "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
 
+[programs.devnet]
+shadowpool = "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
+
 [registry]
 url = "https://api.apr.dev"
 
+# The committed cluster stays as "localnet" so `yarn test` spins its own
+# local validator as before. When running against devnet, override via
+# env var:  ANCHOR_PROVIDER_URL="https://devnet.helius-rpc.com/?api-key=..."
+# or pass  --rpc-url / --provider.cluster  on the CLI.
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
