@@ -171,6 +171,10 @@ pub mod shadowpool {
         vault.last_revealed_nav = 0;
         vault.last_revealed_nav_slot = 0;
         vault.nav_stale = false;
+        // Default cranker = authority. A future `set_cranker` instruction
+        // can delegate this role to a third party without transferring
+        // vault ownership, unlocking the trustless-cranker roadmap.
+        vault.cranker = ctx.accounts.authority.key();
 
         emit!(VaultCreatedEvent {
             vault: vault.key(),
@@ -875,6 +879,32 @@ pub mod shadowpool {
             user: ctx.accounts.user.key(),
             shares_burned: shares,
             amount_out,
+            slot: Clock::get()?.slot,
+        });
+        Ok(())
+    }
+
+    // ==========================================================
+    // SET CRANKER — authority delegates the MPC cranking role
+    // ==========================================================
+
+    /// Authority-only: re-assign `vault.cranker`. Every MPC rebalance
+    /// instruction (`compute_quotes`, `update_balances`,
+    /// `execute_rebalance`) is gated on `cranker == vault.cranker`, so
+    /// this is how a vault owner promotes a delegated cranker (e.g. a
+    /// hot wallet on a cranking bot) without handing over ownership.
+    /// Passing `new_cranker = vault.authority` reverts to the default
+    /// self-cranking model.
+    ///
+    /// Emits `CrankerSetEvent` with the old and new cranker.
+    pub fn set_cranker(ctx: Context<SetCranker>, new_cranker: Pubkey) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        let previous = vault.cranker;
+        vault.cranker = new_cranker;
+        emit!(CrankerSetEvent {
+            vault: vault.key(),
+            previous_cranker: previous,
+            new_cranker,
             slot: Clock::get()?.slot,
         });
         Ok(())

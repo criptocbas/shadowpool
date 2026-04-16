@@ -90,3 +90,11 @@ pub struct RebalanceExecutedEvent {
     pub ask_size: u64,
     pub slot: u64,
 }
+
+#[event]
+pub struct CrankerSetEvent {
+    pub vault: Pubkey,
+    pub previous_cranker: Pubkey,
+    pub new_cranker: Pubkey,
+    pub slot: u64,
+}

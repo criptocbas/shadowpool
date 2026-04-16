@@ -86,12 +86,16 @@ pub struct CreateVaultState<'info> {
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct ComputeQuotes<'info> {
-    #[account(mut)]
+    // Cranker must equal `vault.cranker` — gates who can drive the MPC
+    // quote flow. Without this, an attacker could queue compute_quotes
+    // with an adversarial `oracle_price` and consume the quote slot
+    // before the legitimate cranker. Defaults to `vault.authority` at
+    // init; can be delegated via a future `set_cranker` instruction.
+    #[account(
+        mut,
+        constraint = cranker.key() == vault.cranker @ ErrorCode::Unauthorized,
+    )]
     pub cranker: Signer<'info>,
-    // Bind vault to its derived PDA so a caller cannot pass an arbitrary
-    // Vault account that happens to deserialize. Using vault.authority as
-    // the seed keeps the cranker decoupled from the authority while still
-    // proving the Vault is the legitimate one for that authority.
     #[account(
         mut,
         seeds = [b"vault", vault.authority.as_ref()],
@@ -131,7 +135,15 @@ pub struct ComputeQuotes<'info> {
 #[derive(Accounts)]
 #[instruction(computation_offset: u64)]
 pub struct UpdateBalances<'info> {
-    #[account(mut)]
+    // Cranker gate: only the vault's cranker can apply post-trade deltas
+    // to the encrypted state. Without this, any signer could submit
+    // fake base/quote deltas and corrupt the encrypted balances, which
+    // would then mis-price subsequent quotes and deposits/withdrawals.
+    // Defaults to `vault.authority` at init.
+    #[account(
+        mut,
+        constraint = cranker.key() == vault.cranker @ ErrorCode::Unauthorized,
+    )]
     pub cranker: Signer<'info>,
     #[account(
         mut,
@@ -610,17 +622,31 @@ pub struct Withdraw<'info> {
     pub token_program: Interface<'info, TokenInterface>,
 }
 
+/// Authority-only: re-assign `vault.cranker` to a new pubkey. Lets the
+/// vault owner delegate MPC cranking to a separate keypair (e.g. a hot
+/// wallet on a cranking node) without transferring vault ownership.
 #[derive(Accounts)]
-pub struct ExecuteRebalance<'info> {
-    // Authority gate: only the vault's authority (creator) can execute
-    // a rebalance. Otherwise any address could call this and consume a
-    // freshly-computed quote (setting quotes_consumed=true) before the
-    // legitimate cranker / DEX-routing flow runs — a griefing vector
-    // and, post-DEX-CPI, a sandwich vector. A future iteration can add
-    // a delegated `cranker` field to the Vault for trustless cranking.
+pub struct SetCranker<'info> {
+    pub authority: Signer<'info>,
     #[account(
         mut,
-        constraint = cranker.key() == vault.authority @ ErrorCode::Unauthorized,
+        seeds = [b"vault", authority.key().as_ref()],
+        bump = vault.bump,
+        has_one = authority @ ErrorCode::Unauthorized,
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+}
+
+#[derive(Accounts)]
+pub struct ExecuteRebalance<'info> {
+    // Cranker gate: only `vault.cranker` can execute a rebalance.
+    // Shares the same trust boundary as compute_quotes / update_balances
+    // so a single delegation (via future `set_cranker`) covers the whole
+    // MPC rebalance pipeline. Defaults to `vault.authority` at init, so
+    // a fresh vault behaves identically to the pre-delegation flow.
+    #[account(
+        mut,
+        constraint = cranker.key() == vault.cranker @ ErrorCode::Unauthorized,
     )]
     pub cranker: Signer<'info>,
     #[account(

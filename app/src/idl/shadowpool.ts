@@ -15,6 +15,20 @@ export type Shadowpool = {
   "instructions": [
     {
       "name": "computeQuotes",
+      "docs": [
+        "Queue the MPC computation that produces a bid/ask quote from",
+        "encrypted strategy plus a public oracle price.",
+        "",
+        "**The core value proposition**: the strategy (spread, thresholds,",
+        "inventory) never leaves the MPC cluster. Only the resulting",
+        "`QuoteOutput` (bid/ask price + size + rebalance flag) is revealed",
+        "by the callback.",
+        "",
+        "Caller is the cranker — any signer; the vault is seed-bound to",
+        "its authority so cranker != authority is fine. The callback",
+        "persists the revealed quotes to `vault.last_*` fields so",
+        "`execute_rebalance` can consume them within `QUOTE_STALENESS_SLOTS`."
+      ],
       "discriminator": [
         44,
         107,
@@ -222,6 +236,17 @@ export type Shadowpool = {
     },
     {
       "name": "createVaultState",
+      "docs": [
+        "Queue the MPC computation that creates the vault's initial",
+        "encrypted strategy (installs `Enc<Mxe, VaultState>`).",
+        "",
+        "Called by the vault authority after `initialize_vault`. Takes",
+        "client-side-encrypted `spread_bps` and `rebalance_threshold`",
+        "(along with the x25519 public key + nonce that encrypted them)",
+        "and queues the `init_vault_state` Arcis circuit. The callback",
+        "writes the resulting `Enc<Mxe, VaultState>` into the vault's",
+        "`encrypted_state` field at `ENCRYPTED_STATE_OFFSET`."
+      ],
       "discriminator": [
         213,
         166,
@@ -376,6 +401,19 @@ export type Shadowpool = {
     },
     {
       "name": "deposit",
+      "docs": [
+        "Deposit quote tokens into the vault and receive spTokens pro-rata.",
+        "",
+        "Pricing: if a revealed NAV exists (`last_revealed_nav > 0`),",
+        "prices shares against it; otherwise uses `total_deposits_b`",
+        "(equivalent to NAV pre-trade). Blocks with `NavStale` if a",
+        "rebalance has occurred since the last `reveal_performance`.",
+        "",
+        "Post-transfer, `last_revealed_nav` is incremented by exactly",
+        "`amount` since the deposit is a deterministic, non-MPC delta —",
+        "no fresh reveal is needed. Rejects a zero-shares mint via",
+        "`ZeroShares` (protects against dust that rounds down)."
+      ],
       "discriminator": [
         242,
         35,
@@ -447,6 +485,25 @@ export type Shadowpool = {
     },
     {
       "name": "executeRebalance",
+      "docs": [
+        "Read freshly-computed quotes, (eventually) execute the DEX trade,",
+        "and mark the NAV stale until the next reveal.",
+        "",
+        "Authority-gated (constraint on the `cranker` signer in the",
+        "context). Validates that:",
+        "- quotes exist (`quotes_slot > 0`),",
+        "- they haven't been used (`!quotes_consumed`),",
+        "- they aren't stale (`slot - quotes_slot <= QUOTE_STALENESS_SLOTS`),",
+        "- the MPC said a rebalance was needed (`should_rebalance == 1`),",
+        "- `max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS` (5% ceiling).",
+        "",
+        "**DEX CPI is a placeholder**: computes slippage bounds + logs",
+        "the intended trade, but doesn't yet CPI into Meteora DLMM.",
+        "Once the CPI is live, `update_balances` gets called with the",
+        "actual deltas to re-sync encrypted state.",
+        "",
+        "Flips `nav_stale = true` and `quotes_consumed = true` on exit."
+      ],
       "discriminator": [
         36,
         232,
@@ -507,6 +564,9 @@ export type Shadowpool = {
     },
     {
       "name": "initComputeQuotesCompDef",
+      "docs": [
+        "Register the `compute_quotes` Arcis circuit with the MXE."
+      ],
       "discriminator": [
         183,
         89,
@@ -552,6 +612,9 @@ export type Shadowpool = {
     },
     {
       "name": "initRevealPerformanceCompDef",
+      "docs": [
+        "Register the `reveal_performance` Arcis circuit with the MXE."
+      ],
       "discriminator": [
         89,
         19,
@@ -597,6 +660,9 @@ export type Shadowpool = {
     },
     {
       "name": "initUpdateBalancesCompDef",
+      "docs": [
+        "Register the `update_balances` Arcis circuit with the MXE."
+      ],
       "discriminator": [
         147,
         202,
@@ -642,6 +708,9 @@ export type Shadowpool = {
     },
     {
       "name": "initUpdateStrategyCompDef",
+      "docs": [
+        "Register the `update_strategy` Arcis circuit with the MXE."
+      ],
       "discriminator": [
         188,
         74,
@@ -765,6 +834,9 @@ export type Shadowpool = {
     },
     {
       "name": "initVaultStateCompDef",
+      "docs": [
+        "Register the `init_vault_state` Arcis circuit with the MXE."
+      ],
       "discriminator": [
         136,
         243,
@@ -810,6 +882,24 @@ export type Shadowpool = {
     },
     {
       "name": "initializeVault",
+      "docs": [
+        "Creates the vault PDA + bookkeeping fields.",
+        "",
+        "Runs the creator-time safety checks via account constraints + an",
+        "explicit Token-2022 extension allow-list inside the handler:",
+        "(1) distinct token A/B mints, (2) vault token accounts with no",
+        "delegate and no close authority, (3) share mint with the vault",
+        "PDA as mint authority, zero supply, and no freeze authority,",
+        "(4) every mint (token_a, token_b, share) free of Token-2022",
+        "extensions that would compromise custody or accounting",
+        "(PermanentDelegate, TransferFeeConfig, ConfidentialTransferMint,",
+        "DefaultAccountState, NonTransferable, TransferHook). After",
+        "creation the encrypted state is still all zeros — the owner",
+        "must call `create_vault_state` (MPC) to install the initial",
+        "strategy parameters.",
+        "",
+        "Emits `VaultCreatedEvent` with slot."
+      ],
       "discriminator": [
         48,
         191,
@@ -875,6 +965,20 @@ export type Shadowpool = {
     },
     {
       "name": "revealPerformance",
+      "docs": [
+        "Queue the MPC computation that reveals the vault's total value",
+        "(in quote units), without disclosing the underlying balances or",
+        "strategy.",
+        "",
+        "The callback writes the result to `vault.last_revealed_nav` and",
+        "clears `vault.nav_stale`, which unblocks subsequent deposits",
+        "and withdrawals. The caller is unrestricted so any observer",
+        "can request a fresh NAV reveal; the *content* revealed is only",
+        "the aggregate total.",
+        "",
+        "This is the \"selective disclosure\" primitive that lets auditors",
+        "attest to solvency or performance without touching the strategy."
+      ],
       "discriminator": [
         244,
         34,
@@ -1073,7 +1177,78 @@ export type Shadowpool = {
       ]
     },
     {
+      "name": "setCranker",
+      "docs": [
+        "Authority-only: re-assign `vault.cranker`. Every MPC rebalance",
+        "instruction (`compute_quotes`, `update_balances`,",
+        "`execute_rebalance`) is gated on `cranker == vault.cranker`, so",
+        "this is how a vault owner promotes a delegated cranker (e.g. a",
+        "hot wallet on a cranking bot) without handing over ownership.",
+        "Passing `new_cranker = vault.authority` reverts to the default",
+        "self-cranking model.",
+        "",
+        "Emits `CrankerSetEvent` with the old and new cranker."
+      ],
+      "discriminator": [
+        175,
+        5,
+        111,
+        78,
+        71,
+        59,
+        188,
+        129
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "vault"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "newCranker",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "updateBalances",
+      "docs": [
+        "Queue the MPC computation that applies post-trade deltas to the",
+        "encrypted vault state.",
+        "",
+        "Called after `execute_rebalance` finishes a DEX CPI, with the",
+        "actual base/quote tokens received and sent. The circuit uses",
+        "u128 saturating arithmetic so a malformed cranker can't",
+        "underflow the encrypted balance. Also records `new_mid_price`",
+        "so subsequent `compute_quotes` calls can check price drift."
+      ],
       "discriminator": [
         111,
         250,
@@ -1293,6 +1468,16 @@ export type Shadowpool = {
     },
     {
       "name": "updateStrategy",
+      "docs": [
+        "Queue the MPC computation that replaces the vault's encrypted",
+        "`spread_bps` and `rebalance_threshold` with new client-encrypted",
+        "values.",
+        "",
+        "Authority-only (enforced by `has_one = authority` on the context).",
+        "Leaves balances and `last_mid_price` untouched; only the strategy",
+        "parameters change. An observer sees the vault's quotes shift",
+        "after the next `compute_quotes`, but cannot see why."
+      ],
       "discriminator": [
         16,
         76,
@@ -1525,6 +1710,19 @@ export type Shadowpool = {
     },
     {
       "name": "withdraw",
+      "docs": [
+        "Burn spTokens and receive a pro-rata share of the vault's quote",
+        "tokens.",
+        "",
+        "Pricing mirrors deposit (NAV-aware; blocks when `nav_stale`).",
+        "Also enforces a real-balance solvency check: `vault_token_b.amount",
+        ">= amount_out` — catches cases where the on-chain SPL balance",
+        "has diverged from the bookkeeping counter (only possible post-",
+        "DEX-CPI, but the check is cheap defence-in-depth).",
+        "",
+        "Post-transfer, `last_revealed_nav` decrements by `amount_out`",
+        "(saturating to avoid sub-satoshi residuals from rounding)."
+      ],
       "discriminator": [
         183,
         18,
@@ -1700,6 +1898,19 @@ export type Shadowpool = {
         32,
         180,
         222
+      ]
+    },
+    {
+      "name": "crankerSetEvent",
+      "discriminator": [
+        46,
+        207,
+        206,
+        179,
+        217,
+        161,
+        171,
+        246
       ]
     },
     {
@@ -1915,6 +2126,16 @@ export type Shadowpool = {
       "code": 6018,
       "name": "duplicateMint",
       "msg": "Provided mints or token accounts are duplicates of one another"
+    },
+    {
+      "code": 6019,
+      "name": "zeroNavBasis",
+      "msg": "NAV basis is zero while shares are outstanding — recover with reveal_performance"
+    },
+    {
+      "code": 6020,
+      "name": "disallowedMintExtension",
+      "msg": "Mint carries a Token-2022 extension that is not allowed for vault use"
     }
   ],
   "types": [
@@ -2299,6 +2520,30 @@ export type Shadowpool = {
           {
             "name": "field4",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankerSetEvent",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "previousCranker",
+            "type": "pubkey"
+          },
+          {
+            "name": "newCranker",
+            "type": "pubkey"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
@@ -3096,7 +3341,11 @@ export type Shadowpool = {
         "3. MPC state nonce + `encrypted_state` ciphertexts.",
         "4. Quote persistence (plaintext after MPC reveal; appended after",
         "`encrypted_state` to preserve the offset).",
-        "5. NAV tracking (authoritative share-pricing basis post-trade)."
+        "5. NAV tracking (authoritative share-pricing basis post-trade).",
+        "6. Authorization (the `cranker` pubkey allowed to drive the MPC",
+        "rebalance flow; defaults to `authority` at init so the legacy",
+        "authority-only flow keeps working, with a future `set_cranker`",
+        "instruction unlocking delegated/trustless cranking)."
       ],
       "type": {
         "kind": "struct",
@@ -3135,6 +3384,11 @@ export type Shadowpool = {
           },
           {
             "name": "totalDepositsA",
+            "docs": [
+              "Reserved for future base-side deposits. Not written today (deposits",
+              "are quote-only by design). Kept in the preamble so that enabling",
+              "base-side deposits later does not shift `ENCRYPTED_STATE_OFFSET`."
+            ],
             "type": "u64"
           },
           {
@@ -3143,6 +3397,11 @@ export type Shadowpool = {
           },
           {
             "name": "lastRebalanceSlot",
+            "docs": [
+              "Slot when the most recent `execute_rebalance` executed. Written",
+              "only by `execute_rebalance`; `compute_quotes_callback` tracks its",
+              "own slot separately in `quotes_slot` below."
+            ],
             "type": "u64"
           },
           {
@@ -3210,6 +3469,10 @@ export type Shadowpool = {
           {
             "name": "navStale",
             "type": "bool"
+          },
+          {
+            "name": "cranker",
+            "type": "pubkey"
           }
         ]
       }

@@ -17,6 +17,10 @@ use anchor_lang::prelude::*;
 /// 4. Quote persistence (plaintext after MPC reveal; appended after
 ///    `encrypted_state` to preserve the offset).
 /// 5. NAV tracking (authoritative share-pricing basis post-trade).
+/// 6. Authorization (the `cranker` pubkey allowed to drive the MPC
+///    rebalance flow; defaults to `authority` at init so the legacy
+///    authority-only flow keeps working, with a future `set_cranker`
+///    instruction unlocking delegated/trustless cranking).
 #[account]
 #[derive(InitSpace)]
 pub struct Vault {
@@ -71,4 +75,16 @@ pub struct Vault {
     pub last_revealed_nav: u64,
     pub last_revealed_nav_slot: u64,
     pub nav_stale: bool,
+
+    // --- Authorization ---
+    //
+    // Identity allowed to drive MPC-side rebalance work: compute_quotes,
+    // update_balances, and execute_rebalance. Defaults to `authority` at
+    // init (so a fresh vault behaves exactly like the pre-cranker flow),
+    // but is a separate field so a future `set_cranker` instruction can
+    // promote it to a delegated/trustless cranker without reassigning
+    // the vault's owning authority. Appended at the end of the struct so
+    // adding this field does not shift any prior offset (in particular
+    // `ENCRYPTED_STATE_OFFSET = 249` stays correct).
+    pub cranker: Pubkey,
 }
