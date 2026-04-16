@@ -6,7 +6,9 @@ use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
 pub mod constants;
+pub mod state;
 use constants::*;
+use state::*;
 
 declare_id!("BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g");
 
@@ -803,47 +805,6 @@ pub mod shadowpool {
         });
         Ok(())
     }
-}
-
-// ==============================================================
-// ACCOUNT STATE
-// ==============================================================
-
-#[account]
-#[derive(InitSpace)]
-pub struct Vault {
-    pub bump: u8,
-    pub authority: Pubkey,
-    pub token_a_mint: Pubkey,
-    pub token_b_mint: Pubkey,
-    pub token_a_vault: Pubkey,
-    pub token_b_vault: Pubkey,
-    pub share_mint: Pubkey,
-    pub total_shares: u64,
-    pub total_deposits_a: u64,
-    pub total_deposits_b: u64,
-    pub last_rebalance_slot: u64,
-    pub state_nonce: u128,
-    pub encrypted_state: [[u8; 32]; 5],
-    // --- Quote persistence (AFTER encrypted_state to preserve ENCRYPTED_STATE_OFFSET) ---
-    pub last_bid_price: u64,
-    pub last_bid_size: u64,
-    pub last_ask_price: u64,
-    pub last_ask_size: u64,
-    pub last_should_rebalance: u8,
-    pub quotes_slot: u64,        // Slot when quotes were computed (staleness check)
-    pub quotes_consumed: bool,   // True after execute_rebalance uses the quotes
-    // --- NAV tracking (authoritative share-pricing basis post-trade) ---
-    // Until the first reveal_performance completes, last_revealed_nav is 0
-    // and deposits/withdrawals price off total_deposits_b (equivalent to NAV
-    // pre-trade). After the first reveal it holds the last MPC-attested NAV.
-    // deposit and withdraw keep it in sync with their deterministic deltas;
-    // execute_rebalance flips nav_stale=true when the vault composition has
-    // actually changed, requiring a fresh reveal before more deposits or
-    // withdrawals are allowed.
-    pub last_revealed_nav: u64,
-    pub last_revealed_nav_slot: u64,
-    pub nav_stale: bool,
 }
 
 // ==============================================================
