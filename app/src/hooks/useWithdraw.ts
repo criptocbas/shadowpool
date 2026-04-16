@@ -36,7 +36,7 @@ export function useWithdraw(authority: PublicKey | null) {
         const program = getProgram(connection, wallet);
         const [vaultPda] = getVaultPDA(authority);
 
-        const sig = await (program.methods as any)
+        const sig = await program.methods
           .withdraw(new BN(shares))
           .accountsPartial({
             user: wallet.publicKey,

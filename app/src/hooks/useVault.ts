@@ -3,36 +3,17 @@
 import { useState, useEffect, useCallback } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
-import type { BN } from "@coral-xyz/anchor";
+import type { IdlAccounts } from "@coral-xyz/anchor";
 import { getProgram } from "@/lib/program";
 import { getVaultPDA } from "@/lib/constants";
+import type { Shadowpool } from "@/idl/shadowpool";
 
-export interface VaultData {
-  authority: PublicKey;
-  totalShares: BN;
-  totalDepositsA: BN;
-  totalDepositsB: BN;
-  lastRebalanceSlot: BN;
-  stateNonce: BN;
-  encryptedState: number[][];
-  tokenAMint: PublicKey;
-  tokenBMint: PublicKey;
-  tokenAVault: PublicKey;
-  tokenBVault: PublicKey;
-  shareMint: PublicKey;
-  // Quote persistence fields
-  lastBidPrice: BN;
-  lastBidSize: BN;
-  lastAskPrice: BN;
-  lastAskSize: BN;
-  lastShouldRebalance: number;
-  quotesSlot: BN;
-  quotesConsumed: boolean;
-  // NAV tracking (authoritative post-trade share-pricing basis)
-  lastRevealedNav: BN;
-  lastRevealedNavSlot: BN;
-  navStale: boolean;
-}
+/**
+ * Shape of the vault account, derived directly from the IDL via Anchor's
+ * IdlAccounts helper. Kept as an exported alias so downstream components
+ * can import it without re-touching the IDL.
+ */
+export type VaultData = IdlAccounts<Shadowpool>["vault"];
 
 export function useVault(authority: PublicKey | null) {
   const { connection } = useConnection();
@@ -49,8 +30,8 @@ export function useVault(authority: PublicKey | null) {
       setError(null);
       const program = getProgram(connection, wallet);
       const [vaultPda] = getVaultPDA(authority);
-      const data = await (program.account as any).vault.fetch(vaultPda);
-      setVault(data as unknown as VaultData);
+      const data = await program.account.vault.fetch(vaultPda);
+      setVault(data);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       // Account not found is expected when vault doesn't exist yet
