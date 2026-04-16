@@ -23,7 +23,7 @@
 //! to deserialize correctly.
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use arcium_anchor::prelude::*;
 
 // `ArciumSignerAccount` is emitted by the #[arcium_program] macro at the
@@ -500,8 +500,8 @@ pub struct InitializeVault<'info> {
     #[account(
         constraint = token_a_mint.key() != token_b_mint.key() @ ErrorCode::DuplicateMint,
     )]
-    pub token_a_mint: Account<'info, Mint>,
-    pub token_b_mint: Account<'info, Mint>,
+    pub token_a_mint: InterfaceAccount<'info, Mint>,
+    pub token_b_mint: InterfaceAccount<'info, Mint>,
     // Vault token accounts must be (a) owned by the vault PDA, (b) of the
     // expected mint, AND (c) free of any side-channel that would let a
     // creator drain funds out-of-band: no delegate, no close authority.
@@ -512,14 +512,14 @@ pub struct InitializeVault<'info> {
         constraint = token_a_vault.close_authority.is_none() @ ErrorCode::InvalidVaultAccount,
         constraint = token_a_vault.key() != token_b_vault.key() @ ErrorCode::DuplicateMint,
     )]
-    pub token_a_vault: Account<'info, TokenAccount>,
+    pub token_a_vault: InterfaceAccount<'info, TokenAccount>,
     #[account(
         constraint = token_b_vault.mint == token_b_mint.key() @ ErrorCode::MintMismatch,
         constraint = token_b_vault.owner == vault.key() @ ErrorCode::VaultOwnerMismatch,
         constraint = token_b_vault.delegate.is_none() @ ErrorCode::InvalidVaultAccount,
         constraint = token_b_vault.close_authority.is_none() @ ErrorCode::InvalidVaultAccount,
     )]
-    pub token_b_vault: Account<'info, TokenAccount>,
+    pub token_b_vault: InterfaceAccount<'info, TokenAccount>,
     // Share mint must be (a) authority = vault PDA, (b) zero supply at init,
     // (c) NO freeze authority (otherwise the creator could freeze user
     // share tokens after the fact and lock LPs out of withdrawals).
@@ -528,8 +528,8 @@ pub struct InitializeVault<'info> {
         constraint = share_mint.supply == 0 @ ErrorCode::InvalidAmount,
         constraint = share_mint.freeze_authority.is_none() @ ErrorCode::InvalidMint,
     )]
-    pub share_mint: Account<'info, Mint>,
-    pub token_program: Program<'info, Token>,
+    pub share_mint: InterfaceAccount<'info, Mint>,
+    pub token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
 
@@ -548,28 +548,28 @@ pub struct Deposit<'info> {
         constraint = user_token_account.mint == vault.token_b_mint @ ErrorCode::MintMismatch,
         constraint = user_token_account.owner == user.key() @ ErrorCode::Unauthorized,
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_token_account: InterfaceAccount<'info, TokenAccount>,
     // Quote mint, required by transfer_checked. Pinned to vault.token_b_mint
     // to prevent a caller from substituting a different mint at call time.
     #[account(address = vault.token_b_mint @ ErrorCode::MintMismatch)]
-    pub token_b_mint: Account<'info, Mint>,
+    pub token_b_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
         address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
     )]
-    pub vault_token_b: Account<'info, TokenAccount>,
+    pub vault_token_b: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut,
         address = vault.share_mint @ ErrorCode::MintMismatch,
     )]
-    pub share_mint: Account<'info, Mint>,
+    pub share_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
         constraint = user_share_account.mint == vault.share_mint @ ErrorCode::MintMismatch,
         constraint = user_share_account.owner == user.key() @ ErrorCode::Unauthorized,
     )]
-    pub user_share_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub user_share_account: InterfaceAccount<'info, TokenAccount>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -587,27 +587,27 @@ pub struct Withdraw<'info> {
         constraint = user_token_account.mint == vault.token_b_mint @ ErrorCode::MintMismatch,
         constraint = user_token_account.owner == user.key() @ ErrorCode::Unauthorized,
     )]
-    pub user_token_account: Account<'info, TokenAccount>,
+    pub user_token_account: InterfaceAccount<'info, TokenAccount>,
     // Quote mint, required by transfer_checked.
     #[account(address = vault.token_b_mint @ ErrorCode::MintMismatch)]
-    pub token_b_mint: Account<'info, Mint>,
+    pub token_b_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
         address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
     )]
-    pub vault_token_b: Account<'info, TokenAccount>,
+    pub vault_token_b: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut,
         address = vault.share_mint @ ErrorCode::MintMismatch,
     )]
-    pub share_mint: Account<'info, Mint>,
+    pub share_mint: InterfaceAccount<'info, Mint>,
     #[account(
         mut,
         constraint = user_share_account.mint == vault.share_mint @ ErrorCode::MintMismatch,
         constraint = user_share_account.owner == user.key() @ ErrorCode::Unauthorized,
     )]
-    pub user_share_account: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub user_share_account: InterfaceAccount<'info, TokenAccount>,
+    pub token_program: Interface<'info, TokenInterface>,
 }
 
 #[derive(Accounts)]
@@ -633,13 +633,13 @@ pub struct ExecuteRebalance<'info> {
         mut,
         address = vault.token_a_vault @ ErrorCode::VaultOwnerMismatch,
     )]
-    pub vault_token_a: Account<'info, TokenAccount>,
+    pub vault_token_a: InterfaceAccount<'info, TokenAccount>,
     #[account(
         mut,
         address = vault.token_b_vault @ ErrorCode::VaultOwnerMismatch,
     )]
-    pub vault_token_b: Account<'info, TokenAccount>,
-    pub token_program: Program<'info, Token>,
+    pub vault_token_b: InterfaceAccount<'info, TokenAccount>,
+    pub token_program: Interface<'info, TokenInterface>,
     // --- Meteora DLMM accounts will be added here ---
     // pub dlmm_program: ...
     // pub lb_pair: ...

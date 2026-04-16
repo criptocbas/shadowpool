@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Burn, MintTo, TransferChecked};
+use anchor_spl::token_interface::{self, Burn, MintTo, TransferChecked};
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 
@@ -544,7 +544,7 @@ pub mod shadowpool {
         // which is also a requirement for any Token-2022 mint and the
         // current Solana docs recommendation everywhere.
         let quote_decimals = ctx.accounts.token_b_mint.decimals;
-        token::transfer_checked(
+        token_interface::transfer_checked(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 TransferChecked {
@@ -564,7 +564,7 @@ pub mod shadowpool {
         // fixed at vault creation, and Token-2022 compatibility for share
         // tokens is not on the roadmap.
         let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
-        token::mint_to(
+        token_interface::mint_to(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
@@ -661,7 +661,7 @@ pub mod shadowpool {
         );
 
         // Burn user's share tokens
-        token::burn(
+        token_interface::burn(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Burn {
@@ -677,7 +677,7 @@ pub mod shadowpool {
         // transfer_checked validates mint + decimals; required for Token-2022.
         let quote_decimals = ctx.accounts.token_b_mint.decimals;
         let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
-        token::transfer_checked(
+        token_interface::transfer_checked(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
                 TransferChecked {
