@@ -23,17 +23,27 @@ pub mod shadowpool {
     // ==========================================================
     // COMP DEF INITIALIZERS (one-time setup per circuit)
     // ==========================================================
+    //
+    // Each Arcis circuit needs its computation-definition account
+    // registered on-chain before the circuit can be invoked. These
+    // instructions are called exactly once per circuit per cluster
+    // (devnet / mainnet); the ComputationDefinitionAccount is a PDA
+    // so subsequent calls fail with "already in use" and the test
+    // harness pre-checks via `getAccountInfo` to stay idempotent.
 
+    /// Register the `init_vault_state` Arcis circuit with the MXE.
     pub fn init_vault_state_comp_def(ctx: Context<InitVaultStateCompDef>) -> Result<()> {
         init_comp_def(ctx.accounts, None, None)?;
         Ok(())
     }
 
+    /// Register the `compute_quotes` Arcis circuit with the MXE.
     pub fn init_compute_quotes_comp_def(ctx: Context<InitComputeQuotesCompDef>) -> Result<()> {
         init_comp_def(ctx.accounts, None, None)?;
         Ok(())
     }
 
+    /// Register the `update_balances` Arcis circuit with the MXE.
     pub fn init_update_balances_comp_def(
         ctx: Context<InitUpdateBalancesCompDef>,
     ) -> Result<()> {
@@ -41,6 +51,7 @@ pub mod shadowpool {
         Ok(())
     }
 
+    /// Register the `update_strategy` Arcis circuit with the MXE.
     pub fn init_update_strategy_comp_def(
         ctx: Context<InitUpdateStrategyCompDef>,
     ) -> Result<()> {
@@ -48,6 +59,7 @@ pub mod shadowpool {
         Ok(())
     }
 
+    /// Register the `reveal_performance` Arcis circuit with the MXE.
     pub fn init_reveal_performance_comp_def(
         ctx: Context<InitRevealPerformanceCompDef>,
     ) -> Result<()> {
@@ -59,6 +71,17 @@ pub mod shadowpool {
     // INITIALIZE VAULT — create vault PDA with empty state
     // ==========================================================
 
+    /// Creates the vault PDA + bookkeeping fields.
+    ///
+    /// Runs the five creator-time safety checks via account constraints:
+    /// (1) distinct token A/B mints, (2) vault token accounts with no
+    /// delegate and no close authority, (3) share mint with the vault
+    /// PDA as mint authority, zero supply, and no freeze authority.
+    /// After creation the encrypted state is still all zeros — the
+    /// owner must call `create_vault_state` (MPC) to install the
+    /// initial strategy parameters.
+    ///
+    /// Emits `VaultCreatedEvent` with slot.
     pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
         let vault = &mut ctx.accounts.vault;
         vault.bump = ctx.bumps.vault;
@@ -98,9 +121,16 @@ pub mod shadowpool {
     // ==========================================================
     // INIT VAULT STATE — create encrypted strategy via MPC
     // ==========================================================
-    // Called after initialize_vault. Owner encrypts strategy params,
-    // MPC creates the initial Enc<Mxe, VaultState>.
 
+    /// Queue the MPC computation that creates the vault's initial
+    /// encrypted strategy (installs `Enc<Mxe, VaultState>`).
+    ///
+    /// Called by the vault authority after `initialize_vault`. Takes
+    /// client-side-encrypted `spread_bps` and `rebalance_threshold`
+    /// (along with the x25519 public key + nonce that encrypted them)
+    /// and queues the `init_vault_state` Arcis circuit. The callback
+    /// writes the resulting `Enc<Mxe, VaultState>` into the vault's
+    /// `encrypted_state` field at `ENCRYPTED_STATE_OFFSET`.
     pub fn create_vault_state(
         ctx: Context<CreateVaultState>,
         computation_offset: u64,
@@ -163,8 +193,19 @@ pub mod shadowpool {
     // ==========================================================
     // COMPUTE QUOTES — encrypted strategy + public oracle → plaintext quotes
     // ==========================================================
-    // THE CORE VALUE: strategy stays hidden, only output is revealed.
 
+    /// Queue the MPC computation that produces a bid/ask quote from
+    /// encrypted strategy plus a public oracle price.
+    ///
+    /// **The core value proposition**: the strategy (spread, thresholds,
+    /// inventory) never leaves the MPC cluster. Only the resulting
+    /// `QuoteOutput` (bid/ask price + size + rebalance flag) is revealed
+    /// by the callback.
+    ///
+    /// Caller is the cranker — any signer; the vault is seed-bound to
+    /// its authority so cranker != authority is fine. The callback
+    /// persists the revealed quotes to `vault.last_*` fields so
+    /// `execute_rebalance` can consume them within `QUOTE_STALENESS_SLOTS`.
     pub fn compute_quotes(
         ctx: Context<ComputeQuotes>,
         computation_offset: u64,
@@ -269,6 +310,14 @@ pub mod shadowpool {
     // UPDATE BALANCES — after DEX trade, update encrypted balances
     // ==========================================================
 
+    /// Queue the MPC computation that applies post-trade deltas to the
+    /// encrypted vault state.
+    ///
+    /// Called after `execute_rebalance` finishes a DEX CPI, with the
+    /// actual base/quote tokens received and sent. The circuit uses
+    /// u128 saturating arithmetic so a malformed cranker can't
+    /// underflow the encrypted balance. Also records `new_mid_price`
+    /// so subsequent `compute_quotes` calls can check price drift.
     pub fn update_balances(
         ctx: Context<UpdateBalances>,
         computation_offset: u64,
@@ -344,6 +393,14 @@ pub mod shadowpool {
     // UPDATE STRATEGY — owner changes encrypted params
     // ==========================================================
 
+    /// Queue the MPC computation that replaces the vault's encrypted
+    /// `spread_bps` and `rebalance_threshold` with new client-encrypted
+    /// values.
+    ///
+    /// Authority-only (enforced by `has_one = authority` on the context).
+    /// Leaves balances and `last_mid_price` untouched; only the strategy
+    /// parameters change. An observer sees the vault's quotes shift
+    /// after the next `compute_quotes`, but cannot see why.
     pub fn update_strategy(
         ctx: Context<UpdateStrategy>,
         computation_offset: u64,
@@ -421,6 +478,18 @@ pub mod shadowpool {
     // REVEAL PERFORMANCE — selective disclosure of vault value
     // ==========================================================
 
+    /// Queue the MPC computation that reveals the vault's total value
+    /// (in quote units), without disclosing the underlying balances or
+    /// strategy.
+    ///
+    /// The callback writes the result to `vault.last_revealed_nav` and
+    /// clears `vault.nav_stale`, which unblocks subsequent deposits
+    /// and withdrawals. The caller is unrestricted so any observer
+    /// can request a fresh NAV reveal; the *content* revealed is only
+    /// the aggregate total.
+    ///
+    /// This is the "selective disclosure" primitive that lets auditors
+    /// attest to solvency or performance without touching the strategy.
     pub fn reveal_performance(
         ctx: Context<RevealPerformance>,
         computation_offset: u64,
@@ -491,6 +560,17 @@ pub mod shadowpool {
     // DEPOSIT — user deposits quote token (USDC) into vault
     // ==========================================================
 
+    /// Deposit quote tokens into the vault and receive spTokens pro-rata.
+    ///
+    /// Pricing: if a revealed NAV exists (`last_revealed_nav > 0`),
+    /// prices shares against it; otherwise uses `total_deposits_b`
+    /// (equivalent to NAV pre-trade). Blocks with `NavStale` if a
+    /// rebalance has occurred since the last `reveal_performance`.
+    ///
+    /// Post-transfer, `last_revealed_nav` is incremented by exactly
+    /// `amount` since the deposit is a deterministic, non-MPC delta —
+    /// no fresh reveal is needed. Rejects a zero-shares mint via
+    /// `ZeroShares` (protects against dust that rounds down).
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
@@ -613,6 +693,17 @@ pub mod shadowpool {
     // WITHDRAW — user burns share tokens and receives quote token
     // ==========================================================
 
+    /// Burn spTokens and receive a pro-rata share of the vault's quote
+    /// tokens.
+    ///
+    /// Pricing mirrors deposit (NAV-aware; blocks when `nav_stale`).
+    /// Also enforces a real-balance solvency check: `vault_token_b.amount
+    /// >= amount_out` — catches cases where the on-chain SPL balance
+    /// has diverged from the bookkeeping counter (only possible post-
+    /// DEX-CPI, but the check is cheap defence-in-depth).
+    ///
+    /// Post-transfer, `last_revealed_nav` decrements by `amount_out`
+    /// (saturating to avoid sub-satoshi residuals from rounding).
     pub fn withdraw(ctx: Context<Withdraw>, shares: u64) -> Result<()> {
         require!(shares > 0, ErrorCode::InvalidAmount);
         require!(ctx.accounts.vault.total_shares > 0, ErrorCode::InsufficientBalance);
@@ -722,10 +813,25 @@ pub mod shadowpool {
     // ==========================================================
     // EXECUTE REBALANCE — read persisted quotes, CPI into DEX
     // ==========================================================
-    // Called by a cranker after compute_quotes writes fresh quotes.
-    // Currently a skeleton: validates quotes, emits event, marks consumed.
-    // DEX CPI (Meteora DLMM) will be added in the integration pass.
+    // Called by the authority after compute_quotes writes fresh quotes.
 
+    /// Read freshly-computed quotes, (eventually) execute the DEX trade,
+    /// and mark the NAV stale until the next reveal.
+    ///
+    /// Authority-gated (constraint on the `cranker` signer in the
+    /// context). Validates that:
+    /// - quotes exist (`quotes_slot > 0`),
+    /// - they haven't been used (`!quotes_consumed`),
+    /// - they aren't stale (`slot - quotes_slot <= QUOTE_STALENESS_SLOTS`),
+    /// - the MPC said a rebalance was needed (`should_rebalance == 1`),
+    /// - `max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS` (5% ceiling).
+    ///
+    /// **DEX CPI is a placeholder**: computes slippage bounds + logs
+    /// the intended trade, but doesn't yet CPI into Meteora DLMM.
+    /// Once the CPI is live, `update_balances` gets called with the
+    /// actual deltas to re-sync encrypted state.
+    ///
+    /// Flips `nav_stale = true` and `quotes_consumed = true` on exit.
     pub fn execute_rebalance(
         ctx: Context<ExecuteRebalance>,
         max_slippage_bps: u16,
