@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
-import type { BN } from "@coral-xyz/anchor";
+import { BN } from "@coral-xyz/anchor";
 import { getProgram } from "@/lib/program";
 
 export interface QuotesData {
@@ -15,6 +15,20 @@ export interface QuotesData {
   receivedAt: number;
 }
 
+// The typed IDL guarantees the event shape at compile time, but Anchor's
+// event listener hands us a `Record<string, unknown>` at runtime — a stale
+// listener or IDL drift could still deliver malformed payloads. Validate
+// before trusting the fields downstream.
+function isValidQuotesEvent(event: Record<string, unknown>): boolean {
+  return (
+    BN.isBN(event.bidPrice) &&
+    BN.isBN(event.bidSize) &&
+    BN.isBN(event.askPrice) &&
+    BN.isBN(event.askSize) &&
+    typeof event.shouldRebalance === "number"
+  );
+}
+
 export function useQuotes() {
   const { connection } = useConnection();
   const wallet = useAnchorWallet();
@@ -22,13 +36,17 @@ export function useQuotes() {
   const listenerRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!wallet) return;
+    if (!wallet || !connection) return;
 
     const program = getProgram(connection, wallet);
 
     listenerRef.current = program.addEventListener(
       "quotesComputedEvent",
       (event: Record<string, unknown>) => {
+        if (!isValidQuotesEvent(event)) {
+          console.warn("Discarding malformed quotesComputedEvent", event);
+          return;
+        }
         setQuotes({
           bidPrice: event.bidPrice as BN,
           bidSize: event.bidSize as BN,

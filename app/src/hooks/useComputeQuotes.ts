@@ -81,7 +81,7 @@ export function useComputeQuotes(authority: PublicKey | null) {
               compDefOffset
             ),
           })
-          .rpc({ skipPreflight: true, commitment: "confirmed" });
+          .rpc({ commitment: "confirmed" });
 
         setTxSig(sig);
       } catch (err: unknown) {
