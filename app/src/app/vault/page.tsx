@@ -16,6 +16,7 @@ import { EncryptedField } from "./components/EncryptedField";
 import { MPCDivider, LockIcon } from "./components/MPCDivider";
 import { VerifiedIdentities } from "./components/VerifiedIdentities";
 import { ActivityStream } from "./components/ActivityStream";
+import { CreateVaultPanel } from "./components/CreateVaultPanel";
 
 // ─── Main Dashboard ───────────────────────────────────────────────────
 export default function VaultDashboard() {
@@ -122,6 +123,7 @@ export default function VaultDashboard() {
   }, [vault, quotes]);
 
   const isDemoMode = !connected || !vault;
+  const showCreateVaultFlow = connected && !vaultLoading && !vault;
 
   // ─── Deposit / Withdraw handlers ──────────────────────────────
   // The program exposes deposit/withdraw with explicit SPL account
@@ -322,6 +324,16 @@ export default function VaultDashboard() {
             </div>
           ))}
         </div>
+
+        {/* Connected + no vault → CreateVault CTA lives here, ABOVE the
+            encrypted/revealed panel. We keep the main content grid rendered
+            even in that state so the layout doesn't shift when a vault
+            appears — the CTA occupies the left column temporarily. */}
+        {showCreateVaultFlow && (
+          <div className="px-6 md:px-10 py-6">
+            <CreateVaultPanel onVaultCreated={() => refetchVault()} />
+          </div>
+        )}
 
         {/* Main Content Grid */}
         <div className="grid lg:grid-cols-[1fr,380px] gap-0">
