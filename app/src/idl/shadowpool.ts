@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/shadowpool.json`.
  */
 export type Shadowpool = {
-  "address": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+  "address": "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g",
   "metadata": {
     "name": "shadowpool",
     "version": "0.1.0",
@@ -413,10 +413,21 @@ export type Shadowpool = {
         "(equivalent to NAV pre-trade). Blocks with `NavStale` if a",
         "rebalance has occurred since the last `reveal_performance`.",
         "",
-        "Post-transfer, `last_revealed_nav` is incremented by exactly",
-        "`amount` since the deposit is a deterministic, non-MPC delta —",
-        "no fresh reveal is needed. Rejects a zero-shares mint via",
-        "`ZeroShares` (protects against dust that rounds down)."
+        "**Pre/post reload accounting (H-3).** Bookkeeping credits the",
+        "*actually-received* amount (`balance_after - balance_before`),",
+        "not the caller-supplied `amount`. The Token-2022 extension",
+        "allow-list in `initialize_vault` already rejects mints with a",
+        "`TransferFeeConfig` today, so `actual_received == amount` holds",
+        "in practice — but this pattern is belt-and-braces for forward",
+        "compatibility and audit-defensibility. The share mint is",
+        "calculated from `actual_received`, so a deposit that somehow",
+        "lands short (fee, rounding, hook re-entrancy) mints shares",
+        "pro-rata to what the vault actually received.",
+        "",
+        "Post-transfer, `last_revealed_nav` is incremented by",
+        "`actual_received` since the deposit is a deterministic, non-MPC",
+        "delta. Rejects a zero-shares mint via `ZeroShares` (protects",
+        "against dust that rounds down)."
       ],
       "discriminator": [
         242,
@@ -484,6 +495,80 @@ export type Shadowpool = {
         {
           "name": "amount",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "emergencyOverride",
+      "docs": [
+        "Authority-only escape hatch for stuck internal flags.",
+        "",
+        "Two flags can hang in exceptional operational conditions:",
+        "- `nav_stale`: set by `execute_rebalance`, cleared only by a",
+        "successful `reveal_performance_callback`. If the reveal",
+        "computation is aborted, the MPC cluster goes offline, or the",
+        "comp-def is uninitialized on the cluster, deposit/withdraw",
+        "stay blocked indefinitely. Retrying `reveal_performance` is",
+        "the preferred recovery; this override is the last resort.",
+        "- `pending_state_computation`: set by a queue of the three",
+        "state-mutating MPC instructions and cleared by the paired",
+        "callback (success OR abort). A callback that never arrives",
+        "(cluster failure) would wedge the single-flight guard.",
+        "",
+        "Authority-only (enforced by `has_one = authority`). Emits",
+        "`EmergencyOverrideEvent` with booleans + the previous pending",
+        "offset so any override is auditable. Safe to call with both",
+        "booleans `false` (no-op + event emission — useful for testing)."
+      ],
+      "discriminator": [
+        75,
+        190,
+        183,
+        78,
+        212,
+        137,
+        146,
+        59
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "vault"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "clearNavStale",
+          "type": "bool"
+        },
+        {
+          "name": "clearPendingState",
+          "type": "bool"
         }
       ]
     },
@@ -2056,6 +2141,19 @@ export type Shadowpool = {
       ]
     },
     {
+      "name": "emergencyOverrideEvent",
+      "discriminator": [
+        174,
+        209,
+        120,
+        197,
+        205,
+        174,
+        224,
+        254
+      ]
+    },
+    {
       "name": "performanceRevealedEvent",
       "discriminator": [
         124,
@@ -2288,26 +2386,31 @@ export type Shadowpool = {
     },
     {
       "code": 6025,
+      "name": "stateComputationPending",
+      "msg": "Another MPC state-mutating computation is already in flight; wait for its callback or authority emergency_override"
+    },
+    {
+      "code": 6026,
       "name": "invalidSwapDirection",
       "msg": "Swap direction must be 0 (base→quote) or 1 (quote→base)"
     },
     {
-      "code": 6026,
+      "code": 6027,
       "name": "invalidDlmmPool",
       "msg": "DLMM pool account owner does not match the Meteora DLMM program"
     },
     {
-      "code": 6027,
+      "code": 6028,
       "name": "slippageFloorViolated",
       "msg": "Caller-supplied min_amount_out is below the MPC-price safety floor"
     },
     {
-      "code": 6028,
+      "code": 6029,
       "name": "swapAmountExceedsMpcSize",
       "msg": "Requested swap amount exceeds the size the MPC strategy revealed"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "missingBinArrays",
       "msg": "No bin arrays supplied — DLMM swap requires at least one via remaining_accounts"
     }
@@ -2742,6 +2845,45 @@ export type Shadowpool = {
           {
             "name": "sharesMinted",
             "type": "u64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "emergencyOverrideEvent",
+      "docs": [
+        "Emitted when `emergency_override` clears a stuck internal flag.",
+        "Visible to indexers so operators can audit any authority override",
+        "after the fact."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "clearedNavStale",
+            "type": "bool"
+          },
+          {
+            "name": "clearedPendingState",
+            "type": "bool"
+          },
+          {
+            "name": "previousPendingState",
+            "docs": [
+              "Previous value of `pending_state_computation` (for post-mortem",
+              "forensics — shows which computation offset was hung)."
+            ],
+            "type": {
+              "option": "u64"
+            }
           },
           {
             "name": "slot",
@@ -3774,6 +3916,17 @@ export type Shadowpool = {
               "that the cranker post a fresh VAA in the same transaction."
             ],
             "type": "u64"
+          },
+          {
+            "name": "pendingStateComputation",
+            "docs": [
+              "",
+              "If the Arcium cluster never fires the callback (DoS / down),",
+              "`emergency_override` lets the vault authority clear this flag."
+            ],
+            "type": {
+              "option": "u64"
+            }
           }
         ]
       }

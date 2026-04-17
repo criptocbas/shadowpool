@@ -77,6 +77,10 @@ pub enum ErrorCode {
     #[msg("Pyth confidence interval exceeds the 1% tolerance — price is unreliable")]
     PriceTooUncertain,
 
+    // --- MPC single-flight (M-1) ---
+    #[msg("Another MPC state-mutating computation is already in flight; wait for its callback or authority emergency_override")]
+    StateComputationPending,
+
     // --- Meteora DLMM swap validation ---
     #[msg("Swap direction must be 0 (base→quote) or 1 (quote→base)")]
     InvalidSwapDirection,

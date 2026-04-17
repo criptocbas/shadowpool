@@ -105,4 +105,18 @@ pub struct Vault {
     /// example). Tighter is safer for MEV-sensitive flows but demands
     /// that the cranker post a fresh VAA in the same transaction.
     pub max_price_age_seconds: u64,
+
+    // --- MPC single-flight guard (M-1) ---
+    //
+    // `Some(computation_offset)` while an MPC state-mutating computation
+    // (`create_vault_state`, `update_balances`, `update_strategy`) is
+    // in flight; `None` otherwise. Set at queue time, cleared when the
+    // paired callback fires (including the abort path, so a failed
+    // computation does not wedge the vault). Prevents two callers from
+    // queueing concurrent updates that would race on the same
+    // `state_nonce` and produce inconsistent encrypted state.
+    ///
+    /// If the Arcium cluster never fires the callback (DoS / down),
+    /// `emergency_override` lets the vault authority clear this flag.
+    pub pending_state_computation: Option<u64>,
 }

@@ -655,6 +655,24 @@ pub struct SetCranker<'info> {
     pub vault: Box<Account<'info, Vault>>,
 }
 
+/// Authority-only escape hatch: clear the `nav_stale` flag and/or the
+/// `pending_state_computation` guard. Used to recover from a stuck MPC
+/// cluster, a `reveal_performance` that aborts before callback, or
+/// comparable liveness failures where the vault would otherwise sit
+/// with a non-resolvable internal flag. Emits `EmergencyOverrideEvent`
+/// so the override is discoverable off-chain.
+#[derive(Accounts)]
+pub struct EmergencyOverride<'info> {
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"vault", authority.key().as_ref()],
+        bump = vault.bump,
+        has_one = authority @ ErrorCode::Unauthorized,
+    )]
+    pub vault: Box<Account<'info, Vault>>,
+}
+
 /// Executes a DLMM swap to rebalance the vault. The account set
 /// enumerates every account the Meteora DLMM `swap` instruction needs
 /// (IDL order preserved). Bin arrays are passed via `remaining_accounts`

@@ -98,3 +98,17 @@ pub struct CrankerSetEvent {
     pub new_cranker: Pubkey,
     pub slot: u64,
 }
+
+/// Emitted when `emergency_override` clears a stuck internal flag.
+/// Visible to indexers so operators can audit any authority override
+/// after the fact.
+#[event]
+pub struct EmergencyOverrideEvent {
+    pub vault: Pubkey,
+    pub cleared_nav_stale: bool,
+    pub cleared_pending_state: bool,
+    /// Previous value of `pending_state_computation` (for post-mortem
+    /// forensics — shows which computation offset was hung).
+    pub previous_pending_state: Option<u64>,
+    pub slot: u64,
+}

@@ -303,6 +303,7 @@ pub mod shadowpool {
         vault.cranker = ctx.accounts.authority.key();
         vault.price_feed_id = price_feed_id;
         vault.max_price_age_seconds = max_price_age_seconds;
+        vault.pending_state_computation = None;
 
         emit!(VaultCreatedEvent {
             vault: vault.key(),
@@ -335,6 +336,14 @@ pub mod shadowpool {
         pubkey: [u8; 32],
         nonce: u128,
     ) -> Result<()> {
+        // Single-flight guard (M-1) — one in-flight state-mutating MPC
+        // computation per vault. Cleared in the callback.
+        require!(
+            ctx.accounts.vault.pending_state_computation.is_none(),
+            ErrorCode::StateComputationPending
+        );
+        ctx.accounts.vault.pending_state_computation = Some(computation_offset);
+
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
         let args = ArgBuilder::new()
@@ -367,13 +376,20 @@ pub mod shadowpool {
         ctx: Context<InitVaultStateCallback>,
         output: SignedComputationOutputs<InitVaultStateOutput>,
     ) -> Result<()> {
-        let o = match output.verify_output(
+        let verify_result = output.verify_output(
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
-        ) {
-            Ok(InitVaultStateOutput { field_0 }) => field_0,
-            Err(_) => return Err(ErrorCode::AbortedComputation.into()),
-        };
+        );
+        // Clear the single-flight pending flag regardless of outcome —
+        // this callback firing means Arcium has resolved the computation,
+        // so the vault is free to accept new state-mutating queues. If
+        // we only cleared on success, an aborted computation would
+        // wedge the vault indefinitely (M-1 liveness).
+        ctx.accounts.vault.pending_state_computation = None;
+
+        let o = verify_result
+            .map_err(|_| ErrorCode::AbortedComputation)?
+            .field_0;
 
         let vault = &mut ctx.accounts.vault;
         vault.encrypted_state = o.ciphertexts;
@@ -537,19 +553,27 @@ pub mod shadowpool {
         quote_sent: u64,
         new_mid_price: u64,
     ) -> Result<()> {
-        let vault = &ctx.accounts.vault;
-        require!(vault.state_nonce > 0, ErrorCode::VaultNotInitialized);
+        // Preconditions — take the checks off `ctx.accounts.vault` directly
+        // so we can then mutate the pending flag without a borrow conflict.
+        require!(
+            ctx.accounts.vault.state_nonce > 0,
+            ErrorCode::VaultNotInitialized
+        );
+        require!(
+            ctx.accounts.vault.pending_state_computation.is_none(),
+            ErrorCode::StateComputationPending
+        );
+        ctx.accounts.vault.pending_state_computation = Some(computation_offset);
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
+        let state_nonce = ctx.accounts.vault.state_nonce;
+        let vault_key = ctx.accounts.vault.key();
+
         // ArgBuilder order matches circuit: state (Enc<Mxe>) first, then plaintexts
         let args = ArgBuilder::new()
-            .plaintext_u128(vault.state_nonce)
-            .account(
-                ctx.accounts.vault.key(),
-                ENCRYPTED_STATE_OFFSET,
-                ENCRYPTED_STATE_SIZE,
-            )
+            .plaintext_u128(state_nonce)
+            .account(vault_key, ENCRYPTED_STATE_OFFSET, ENCRYPTED_STATE_SIZE)
             .plaintext_u64(base_received)
             .plaintext_u64(base_sent)
             .plaintext_u64(quote_received)
@@ -580,13 +604,15 @@ pub mod shadowpool {
         ctx: Context<UpdateBalancesCallback>,
         output: SignedComputationOutputs<UpdateBalancesOutput>,
     ) -> Result<()> {
-        let o = match output.verify_output(
+        let verify_result = output.verify_output(
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
-        ) {
-            Ok(UpdateBalancesOutput { field_0 }) => field_0,
-            Err(_) => return Err(ErrorCode::AbortedComputation.into()),
-        };
+        );
+        ctx.accounts.vault.pending_state_computation = None;
+
+        let o = verify_result
+            .map_err(|_| ErrorCode::AbortedComputation)?
+            .field_0;
 
         let vault = &mut ctx.accounts.vault;
         vault.encrypted_state = o.ciphertexts;
@@ -619,23 +645,29 @@ pub mod shadowpool {
         pubkey: [u8; 32],
         nonce: u128,
     ) -> Result<()> {
-        let vault = &ctx.accounts.vault;
         require!(
-            vault.authority == ctx.accounts.authority.key(),
+            ctx.accounts.vault.authority == ctx.accounts.authority.key(),
             ErrorCode::Unauthorized
         );
-        require!(vault.state_nonce > 0, ErrorCode::VaultNotInitialized);
+        require!(
+            ctx.accounts.vault.state_nonce > 0,
+            ErrorCode::VaultNotInitialized
+        );
+        require!(
+            ctx.accounts.vault.pending_state_computation.is_none(),
+            ErrorCode::StateComputationPending
+        );
+        ctx.accounts.vault.pending_state_computation = Some(computation_offset);
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
+        let state_nonce = ctx.accounts.vault.state_nonce;
+        let vault_key = ctx.accounts.vault.key();
+
         // ArgBuilder order matches circuit: state (Enc<Mxe>) first, then new_params (Enc<Shared>)
         let args = ArgBuilder::new()
-            .plaintext_u128(vault.state_nonce)
-            .account(
-                ctx.accounts.vault.key(),
-                ENCRYPTED_STATE_OFFSET,
-                ENCRYPTED_STATE_SIZE,
-            )
+            .plaintext_u128(state_nonce)
+            .account(vault_key, ENCRYPTED_STATE_OFFSET, ENCRYPTED_STATE_SIZE)
             .x25519_pubkey(pubkey)
             .plaintext_u128(nonce)
             .encrypted_u16(encrypted_spread_bps)
@@ -665,13 +697,15 @@ pub mod shadowpool {
         ctx: Context<UpdateStrategyCallback>,
         output: SignedComputationOutputs<UpdateStrategyOutput>,
     ) -> Result<()> {
-        let o = match output.verify_output(
+        let verify_result = output.verify_output(
             &ctx.accounts.cluster_account,
             &ctx.accounts.computation_account,
-        ) {
-            Ok(UpdateStrategyOutput { field_0 }) => field_0,
-            Err(_) => return Err(ErrorCode::AbortedComputation.into()),
-        };
+        );
+        ctx.accounts.vault.pending_state_computation = None;
+
+        let o = verify_result
+            .map_err(|_| ErrorCode::AbortedComputation)?
+            .field_0;
 
         let vault = &mut ctx.accounts.vault;
         vault.encrypted_state = o.ciphertexts;
@@ -777,69 +811,44 @@ pub mod shadowpool {
     /// (equivalent to NAV pre-trade). Blocks with `NavStale` if a
     /// rebalance has occurred since the last `reveal_performance`.
     ///
-    /// Post-transfer, `last_revealed_nav` is incremented by exactly
-    /// `amount` since the deposit is a deterministic, non-MPC delta —
-    /// no fresh reveal is needed. Rejects a zero-shares mint via
-    /// `ZeroShares` (protects against dust that rounds down).
+    /// **Pre/post reload accounting (H-3).** Bookkeeping credits the
+    /// *actually-received* amount (`balance_after - balance_before`),
+    /// not the caller-supplied `amount`. The Token-2022 extension
+    /// allow-list in `initialize_vault` already rejects mints with a
+    /// `TransferFeeConfig` today, so `actual_received == amount` holds
+    /// in practice — but this pattern is belt-and-braces for forward
+    /// compatibility and audit-defensibility. The share mint is
+    /// calculated from `actual_received`, so a deposit that somehow
+    /// lands short (fee, rounding, hook re-entrancy) mints shares
+    /// pro-rata to what the vault actually received.
+    ///
+    /// Post-transfer, `last_revealed_nav` is incremented by
+    /// `actual_received` since the deposit is a deterministic, non-MPC
+    /// delta. Rejects a zero-shares mint via `ZeroShares` (protects
+    /// against dust that rounds down).
     pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         require!(amount > 0, ErrorCode::InvalidAmount);
 
-        // Extract signer seeds before any mutable borrow
+        // Staleness guard — block deposits against a post-rebalance NAV
+        // that hasn't been refreshed by reveal_performance.
+        require!(!ctx.accounts.vault.nav_stale, ErrorCode::NavStale);
+
+        // Extract signer seeds (not yet needed, but cleaner above the
+        // mutable borrow sequence that follows).
         let authority_key = ctx.accounts.vault.authority;
         let bump = ctx.accounts.vault.bump;
         let vault_key = ctx.accounts.vault.key();
 
-        // NAV-aware share pricing.
+        // --- Transfer quote tokens: user → vault ---
         //
-        // Pricing basis:
-        //   - If the vault has a revealed NAV (last_revealed_nav > 0), use it.
-        //     This is authoritative post-trade because the MPC-attested NAV
-        //     reflects actual vault composition (base value + quote value).
-        //   - Otherwise we're pre-first-reveal: no trades have happened, so
-        //     total_deposits_b == NAV and is safe to use.
-        //
-        // Staleness guard:
-        //   Once execute_rebalance has run, nav_stale is true until the next
-        //   reveal_performance_callback. Depositing against a stale NAV would
-        //   mis-price shares (the revealed NAV doesn't reflect post-trade
-        //   holdings). Reject and require a refresh.
-        require!(!ctx.accounts.vault.nav_stale, ErrorCode::NavStale);
+        // Pre/post snapshot the vault's quote ATA so bookkeeping can
+        // credit the exact amount the vault received (H-3). The
+        // `reload()` before the snapshot is belt-and-braces: Anchor
+        // auto-refreshes on account deserialization, but explicit
+        // reload documents the intent.
+        ctx.accounts.vault_token_b.reload()?;
+        let balance_before = ctx.accounts.vault_token_b.amount;
 
-        let uses_revealed_nav = ctx.accounts.vault.last_revealed_nav > 0;
-        let nav_basis = if uses_revealed_nav {
-            ctx.accounts.vault.last_revealed_nav
-        } else {
-            ctx.accounts.vault.total_deposits_b
-        };
-
-        // Calculate shares to mint. First deposit is 1:1 (bootstraps share
-        // supply). Subsequent deposits dilute pro-rata against the nav_basis.
-        //
-        // If shares are outstanding but nav_basis is zero (edge case: a post-
-        // rebalance state where encrypted balances hold the position but the
-        // pre-reveal quote counter is drained), we'd otherwise divide by zero
-        // and surface a confusing MathOverflow. Fail fast with a clearer
-        // error so the caller knows to run reveal_performance.
-        let shares_to_mint = if ctx.accounts.vault.total_shares == 0 {
-            amount
-        } else {
-            require!(nav_basis > 0, ErrorCode::ZeroNavBasis);
-            // u128 intermediate prevents overflow on amount * total_shares
-            // for large vaults; downcast is safe because (amount / nav_basis)
-            // <= 1 in typical conditions.
-            let scaled = (amount as u128)
-                .checked_mul(ctx.accounts.vault.total_shares as u128)
-                .ok_or(ErrorCode::MathOverflow)?
-                .checked_div(nav_basis as u128)
-                .ok_or(ErrorCode::MathOverflow)?;
-            u64::try_from(scaled).map_err(|_| ErrorCode::MathOverflow)?
-        };
-        require!(shares_to_mint > 0, ErrorCode::ZeroShares);
-
-        // Transfer quote tokens from user to vault. transfer_checked
-        // (vs the legacy transfer) validates mint identity and decimals,
-        // which is also a requirement for any Token-2022 mint and the
-        // current Solana docs recommendation everywhere.
         let quote_decimals = ctx.accounts.token_b_mint.decimals;
         token_interface::transfer_checked(
             CpiContext::new(
@@ -855,11 +864,53 @@ pub mod shadowpool {
             quote_decimals,
         )?;
 
-        // Mint share tokens (spTokens) to user — vault PDA is the mint
-        // authority. mint_to (rather than mint_to_checked) is fine here:
-        // the share mint is our own program-owned mint, decimals are
-        // fixed at vault creation, and Token-2022 compatibility for share
-        // tokens is not on the roadmap.
+        ctx.accounts.vault_token_b.reload()?;
+        let actual_received = ctx
+            .accounts
+            .vault_token_b
+            .amount
+            .checked_sub(balance_before)
+            .ok_or(ErrorCode::MathOverflow)?;
+        // Hard floor: the vault must have received something. Catches
+        // transfer-fee misconfigurations or hook-side reverts where the
+        // outer tx "succeeded" but the vault's balance did not move.
+        require!(actual_received > 0, ErrorCode::InvalidAmount);
+
+        // --- NAV-aware share pricing ---
+        //
+        // Pricing basis:
+        //   - If the vault has a revealed NAV (last_revealed_nav > 0),
+        //     use it; authoritative post-trade.
+        //   - Otherwise pre-first-reveal: total_deposits_b == NAV.
+        let uses_revealed_nav = ctx.accounts.vault.last_revealed_nav > 0;
+        let nav_basis = if uses_revealed_nav {
+            ctx.accounts.vault.last_revealed_nav
+        } else {
+            ctx.accounts.vault.total_deposits_b
+        };
+
+        // Calculate shares from the actually-received amount.
+        let shares_to_mint = if ctx.accounts.vault.total_shares == 0 {
+            actual_received
+        } else {
+            require!(nav_basis > 0, ErrorCode::ZeroNavBasis);
+            // u128 intermediate prevents overflow on
+            // actual_received * total_shares for large vaults.
+            let scaled = (actual_received as u128)
+                .checked_mul(ctx.accounts.vault.total_shares as u128)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(nav_basis as u128)
+                .ok_or(ErrorCode::MathOverflow)?;
+            u64::try_from(scaled).map_err(|_| ErrorCode::MathOverflow)?
+        };
+        require!(shares_to_mint > 0, ErrorCode::ZeroShares);
+
+        // --- Mint spTokens to user ---
+        //
+        // Vault PDA signs. mint_to (rather than mint_to_checked) is fine
+        // here: the share mint is our own program-owned mint, decimals
+        // are fixed at vault creation, and Token-2022 compatibility for
+        // share tokens is not on the roadmap.
         let signer_seeds: &[&[&[u8]]] = &[&[b"vault", authority_key.as_ref(), &[bump]]];
         token_interface::mint_to(
             CpiContext::new_with_signer(
@@ -874,32 +925,30 @@ pub mod shadowpool {
             shares_to_mint,
         )?;
 
-        // Reload vault_token_b so any subsequent code that reads its amount
-        // sees the post-transfer value rather than the pre-CPI snapshot.
-        // No-op for the current state-update logic but required as soon as
-        // execute_rebalance integrates a real DEX CPI.
-        ctx.accounts.vault_token_b.reload()?;
-
-        // Update vault state
+        // --- Update vault state with the actually-credited amount ---
         let vault = &mut ctx.accounts.vault;
-        vault.total_shares = vault.total_shares.checked_add(shares_to_mint).ok_or(ErrorCode::MathOverflow)?;
-        vault.total_deposits_b = vault.total_deposits_b.checked_add(amount).ok_or(ErrorCode::MathOverflow)?;
-
-        // NAV tracking: the deposit adds exactly `amount` quote tokens to the
-        // vault, so a revealed NAV stays accurate after this deterministic
-        // delta. Only update when we have a revealed NAV to track; the
-        // pre-reveal path uses total_deposits_b which we already updated.
+        vault.total_shares = vault
+            .total_shares
+            .checked_add(shares_to_mint)
+            .ok_or(ErrorCode::MathOverflow)?;
+        vault.total_deposits_b = vault
+            .total_deposits_b
+            .checked_add(actual_received)
+            .ok_or(ErrorCode::MathOverflow)?;
         if uses_revealed_nav {
             vault.last_revealed_nav = vault
                 .last_revealed_nav
-                .checked_add(amount)
+                .checked_add(actual_received)
                 .ok_or(ErrorCode::MathOverflow)?;
         }
 
+        // Emit the actually-received amount (not the caller's claim).
+        // An indexer comparing user-side debit vs vault-side credit will
+        // see any fee delta as (amount - actual_received).
         emit!(DepositEvent {
             vault: vault_key,
             user: ctx.accounts.user.key(),
-            amount,
+            amount: actual_received,
             shares_minted: shares_to_mint,
             slot: Clock::get()?.slot,
         });
@@ -1049,6 +1098,52 @@ pub mod shadowpool {
             vault: vault.key(),
             previous_cranker: previous,
             new_cranker,
+            slot: Clock::get()?.slot,
+        });
+        Ok(())
+    }
+
+    // ==========================================================
+    // EMERGENCY OVERRIDE — authority unsticks liveness flags
+    // ==========================================================
+
+    /// Authority-only escape hatch for stuck internal flags.
+    ///
+    /// Two flags can hang in exceptional operational conditions:
+    /// - `nav_stale`: set by `execute_rebalance`, cleared only by a
+    ///   successful `reveal_performance_callback`. If the reveal
+    ///   computation is aborted, the MPC cluster goes offline, or the
+    ///   comp-def is uninitialized on the cluster, deposit/withdraw
+    ///   stay blocked indefinitely. Retrying `reveal_performance` is
+    ///   the preferred recovery; this override is the last resort.
+    /// - `pending_state_computation`: set by a queue of the three
+    ///   state-mutating MPC instructions and cleared by the paired
+    ///   callback (success OR abort). A callback that never arrives
+    ///   (cluster failure) would wedge the single-flight guard.
+    ///
+    /// Authority-only (enforced by `has_one = authority`). Emits
+    /// `EmergencyOverrideEvent` with booleans + the previous pending
+    /// offset so any override is auditable. Safe to call with both
+    /// booleans `false` (no-op + event emission — useful for testing).
+    pub fn emergency_override(
+        ctx: Context<EmergencyOverride>,
+        clear_nav_stale: bool,
+        clear_pending_state: bool,
+    ) -> Result<()> {
+        let vault = &mut ctx.accounts.vault;
+        let previous_pending_state = vault.pending_state_computation;
+        if clear_nav_stale {
+            vault.nav_stale = false;
+        }
+        if clear_pending_state {
+            vault.pending_state_computation = None;
+        }
+
+        emit!(EmergencyOverrideEvent {
+            vault: vault.key(),
+            cleared_nav_stale: clear_nav_stale,
+            cleared_pending_state: clear_pending_state,
+            previous_pending_state,
             slot: Clock::get()?.slot,
         });
         Ok(())
