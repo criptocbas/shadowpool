@@ -87,4 +87,22 @@ pub struct Vault {
     // adding this field does not shift any prior offset (in particular
     // `ENCRYPTED_STATE_OFFSET = 249` stays correct).
     pub cranker: Pubkey,
+
+    // --- Oracle configuration ---
+    //
+    // Per-vault Pyth feed configuration. Stored on-chain (not as a
+    // program constant) so governance can point different vaults at
+    // different feeds (e.g. SOL/USD on one vault, BTC/USD on another)
+    // without a program upgrade, and can rotate a compromised feed
+    // without a redeploy. Feed IDs are chain-agnostic 32-byte hashes —
+    // the same value on mainnet-beta, devnet, and any other Pyth-
+    // supported chain. Appended at the end of the struct so neither
+    // the Arcium encrypted-state offset nor the pre-cranker field
+    // positions are affected.
+    pub price_feed_id: [u8; 32],
+    /// Maximum age (seconds) a Pyth price update can carry before being
+    /// rejected as stale. Typical value: 30 (matches Pyth's own docs
+    /// example). Tighter is safer for MEV-sensitive flows but demands
+    /// that the cranker post a fresh VAA in the same transaction.
+    pub max_price_age_seconds: u64,
 }

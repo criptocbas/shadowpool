@@ -66,4 +66,14 @@ pub enum ErrorCode {
     // --- Token-2022 extension allow-list ---
     #[msg("Mint carries a Token-2022 extension that is not allowed for vault use")]
     DisallowedMintExtension,
+
+    // --- Pyth oracle validation ---
+    #[msg("Pyth price update does not match the vault's configured feed_id")]
+    PriceFeedMismatch,
+    #[msg("Pyth reported a negative or zero price — unexpected for a spot feed")]
+    NegativePrice,
+    #[msg("Pyth price exponent is outside the accepted [-18, 0] range")]
+    InvalidPriceExponent,
+    #[msg("Pyth confidence interval exceeds the 1% tolerance — price is unreliable")]
+    PriceTooUncertain,
 }

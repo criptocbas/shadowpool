@@ -6,6 +6,7 @@ use anchor_spl::token_2022::spl_token_2022::{
 use anchor_spl::token_interface::{self, Burn, Mint, MintTo, TransferChecked};
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
+use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
 
 pub mod constants;
 pub mod contexts;
@@ -42,6 +43,110 @@ const DISALLOWED_MINT_EXTENSIONS: &[ExtensionType] = &[
     ExtensionType::NonTransferable,
     ExtensionType::TransferHook,
 ];
+
+/// Read and validate a Pyth Pull Oracle price update, returning
+/// `(price_micro_usd, conf_micro_usd)` normalized to the program's
+/// `TARGET_PRICE_EXPO` scale. Runs the full audit-grade checklist:
+///
+/// 1. Account ownership is enforced by Anchor (`Account<PriceUpdateV2>`).
+/// 2. `feed_id` match — enforced by the handler's account constraint
+///    AND again inside `get_price_no_older_than` as belt-and-braces.
+/// 3. Staleness — rejects any update older than `max_age_seconds`.
+/// 4. Exponent sanity — rejects values outside `[-18, 0]`.
+/// 5. Positive price — rejects `price <= 0` for spot feeds.
+/// 6. Confidence ratio — rejects `conf/|price| > MAX_CONF_BPS/10_000`.
+/// 7. Exponent normalisation — converts to `TARGET_PRICE_EXPO` using
+///    u128 checked ops (no floats).
+///
+/// Runs steps 1–3 via the Pyth SDK, then delegates the price/exponent/
+/// confidence validation and normalisation to `validate_and_normalize_price`
+/// — split so the math is unit-testable without fabricating a signed
+/// on-chain `PriceUpdateV2`.
+fn read_pyth_price(
+    price_update: &PriceUpdateV2,
+    feed_id: &[u8; 32],
+    max_age_seconds: u64,
+) -> Result<(u64, u64)> {
+    let price: Price = price_update
+        .get_price_no_older_than(&Clock::get()?, max_age_seconds, feed_id)
+        .map_err(|_| error!(ErrorCode::PriceFeedMismatch))?;
+    validate_and_normalize_price(price.price, price.conf, price.exponent)
+}
+
+/// Pure validation + normalisation. Factored out of `read_pyth_price`
+/// so the arithmetic can be exhaustively unit-tested with fixture
+/// inputs (the on-chain SDK's `PriceUpdateV2` is hard to construct in
+/// a test context). All on-chain callers go through `read_pyth_price`
+/// which adds the SDK-level staleness + feed-id + owner checks.
+fn validate_and_normalize_price(price: i64, conf: u64, exponent: i32) -> Result<(u64, u64)> {
+    require!(
+        exponent >= MIN_PYTH_EXPONENT && exponent <= MAX_PYTH_EXPONENT,
+        ErrorCode::InvalidPriceExponent
+    );
+    require!(price > 0, ErrorCode::NegativePrice);
+
+    // Confidence check in the *native* Pyth scale — ratios are scale-
+    // invariant so there's no need to normalise first.
+    //
+    //   conf/price > MAX_CONF_BPS/10_000
+    //   <=> conf * 10_000 > price * MAX_CONF_BPS
+    let price_abs = price.unsigned_abs();
+    let lhs = (conf as u128)
+        .checked_mul(10_000u128)
+        .ok_or(ErrorCode::MathOverflow)?;
+    let rhs = (price_abs as u128)
+        .checked_mul(MAX_CONF_BPS as u128)
+        .ok_or(ErrorCode::MathOverflow)?;
+    require!(lhs <= rhs, ErrorCode::PriceTooUncertain);
+
+    // Normalise to TARGET_PRICE_EXPO via u128 checked ops.
+    //
+    // Pyth reports a value as `price * 10^exponent`. We store it as
+    // `normalized * 10^TARGET_PRICE_EXPO`. Equating:
+    //   normalized = price * 10^(exponent - TARGET_PRICE_EXPO)
+    // Let `shift = exponent - TARGET_PRICE_EXPO`:
+    //   shift > 0 → Pyth scale coarser than target → multiply.
+    //   shift < 0 → Pyth scale finer  than target → divide.
+    //   shift = 0 → identity.
+    //
+    // Worked example (SOL/USD): Pyth expo=-8, TARGET_PRICE_EXPO=-6.
+    //   shift = -8 - (-6) = -2 → divide raw by 100.
+    //   Pyth raw 15_000_000_000 ($150.00000000) ÷ 100 → 150_000_000
+    //   (micro-USD = $150.000000). Correct.
+    let shift: i32 = exponent
+        .checked_sub(TARGET_PRICE_EXPO)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+    let price_u128 = price as u128;
+    let conf_u128 = conf as u128;
+
+    let (norm_price, norm_conf): (u128, u128) = if shift >= 0 {
+        let mult = 10u128
+            .checked_pow(shift as u32)
+            .ok_or(ErrorCode::MathOverflow)?;
+        (
+            price_u128.checked_mul(mult).ok_or(ErrorCode::MathOverflow)?,
+            conf_u128.checked_mul(mult).ok_or(ErrorCode::MathOverflow)?,
+        )
+    } else {
+        let div = 10u128
+            .checked_pow((-shift) as u32)
+            .ok_or(ErrorCode::MathOverflow)?;
+        (
+            price_u128.checked_div(div).ok_or(ErrorCode::MathOverflow)?,
+            conf_u128.checked_div(div).ok_or(ErrorCode::MathOverflow)?,
+        )
+    };
+
+    let price_u64: u64 = norm_price
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MathOverflow))?;
+    let conf_u64: u64 = norm_conf
+        .try_into()
+        .map_err(|_| error!(ErrorCode::MathOverflow))?;
+
+    Ok((price_u64, conf_u64))
+}
 
 /// Rejects any mint that carries a disallowed Token-2022 extension. Legacy
 /// SPL Token mints (owner = `spl_token::ID`) have no extensions and pass
@@ -138,8 +243,25 @@ pub mod shadowpool {
     /// must call `create_vault_state` (MPC) to install the initial
     /// strategy parameters.
     ///
+    /// Oracle parameters:
+    /// - `price_feed_id` — 32-byte chain-agnostic Pyth feed ID
+    ///   (e.g. SOL/USD = `0xef0d…b56d`). Gates which Pyth account is
+    ///   accepted by `compute_quotes`. Auditors prefer this in per-
+    ///   vault config over hard-coded program constants because it
+    ///   lets governance rotate a compromised feed without redeploy.
+    /// - `max_price_age_seconds` — maximum staleness of a Pyth update
+    ///   passed to `compute_quotes`. Industry default is 30s; tighter
+    ///   values (10–15s) require the cranker to post the VAA in the
+    ///   same transaction. Must be > 0.
+    ///
     /// Emits `VaultCreatedEvent` with slot.
-    pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+    pub fn initialize_vault(
+        ctx: Context<InitializeVault>,
+        price_feed_id: [u8; 32],
+        max_price_age_seconds: u64,
+    ) -> Result<()> {
+        require!(max_price_age_seconds > 0, ErrorCode::InvalidAmount);
+
         // Reject mints carrying Token-2022 extensions that break custody
         // or accounting. Done in the handler (not a constraint) because
         // extension parsing requires borrowing the raw account data.
@@ -175,6 +297,8 @@ pub mod shadowpool {
         // can delegate this role to a third party without transferring
         // vault ownership, unlocking the trustless-cranker roadmap.
         vault.cranker = ctx.accounts.authority.key();
+        vault.price_feed_id = price_feed_id;
+        vault.max_price_age_seconds = max_price_age_seconds;
 
         emit!(VaultCreatedEvent {
             vault: vault.key(),
@@ -263,25 +387,41 @@ pub mod shadowpool {
     // ==========================================================
 
     /// Queue the MPC computation that produces a bid/ask quote from
-    /// encrypted strategy plus a public oracle price.
+    /// encrypted strategy plus a Pyth-verified public price.
     ///
     /// **The core value proposition**: the strategy (spread, thresholds,
     /// inventory) never leaves the MPC cluster. Only the resulting
     /// `QuoteOutput` (bid/ask price + size + rebalance flag) is revealed
     /// by the callback.
     ///
-    /// Caller is the cranker — any signer; the vault is seed-bound to
-    /// its authority so cranker != authority is fine. The callback
-    /// persists the revealed quotes to `vault.last_*` fields so
+    /// Oracle price is read from a Pyth Pull Oracle `PriceUpdateV2`
+    /// account supplied by the cranker. The account is owner-checked by
+    /// Anchor (`Account<PriceUpdateV2>`), feed-id-checked by the context
+    /// constraint against `vault.price_feed_id`, then the handler calls
+    /// `get_price_no_older_than` (which re-checks feed id internally) to
+    /// enforce `vault.max_price_age_seconds`. The price/confidence are
+    /// then sanity-checked (positive, bounded exponent, ≤1% conf ratio)
+    /// and normalised to the program's micro-USD scale before being
+    /// passed to the MPC circuit as plaintext `u64`s.
+    ///
+    /// Caller is the cranker (gated by `cranker == vault.cranker`). The
+    /// callback persists the revealed quotes to `vault.last_*` fields so
     /// `execute_rebalance` can consume them within `QUOTE_STALENESS_SLOTS`.
     pub fn compute_quotes(
         ctx: Context<ComputeQuotes>,
         computation_offset: u64,
-        oracle_price: u64,
-        oracle_confidence: u64,
     ) -> Result<()> {
         let vault = &ctx.accounts.vault;
         require!(vault.state_nonce > 0, ErrorCode::VaultNotInitialized);
+
+        // Read + validate + normalise the Pyth price before queueing the MPC
+        // computation. Any reject path here keeps the MPC queue and fee
+        // pool untouched (fails the tx before `queue_computation`).
+        let (oracle_price, oracle_confidence) = read_pyth_price(
+            &ctx.accounts.price_update,
+            &vault.price_feed_id,
+            vault.max_price_age_seconds,
+        )?;
 
         ctx.accounts.sign_pda_account.bump = ctx.bumps.sign_pda_account;
 
@@ -1026,6 +1166,125 @@ pub mod shadowpool {
 // ==============================================================
 // INVARIANT TESTS
 // ==============================================================
+
+#[cfg(test)]
+mod pyth_normalization_tests {
+    //! Unit tests for `validate_and_normalize_price` — the pure arithmetic
+    //! core of the Pyth integration. Covers each reject path and the
+    //! three scaling branches (coarser, equal, finer than program scale).
+    //!
+    //! These tests don't exercise staleness, feed-id, or account-ownership
+    //! checks; those live one layer up in `read_pyth_price` and are
+    //! enforced by the Pyth SDK + Anchor. The integration test on devnet
+    //! covers the full on-chain stack with a real `PriceUpdateV2`.
+    use super::{validate_and_normalize_price, ErrorCode};
+    use anchor_lang::prelude::*;
+    type TestResult = std::result::Result<(u64, u64), anchor_lang::error::Error>;
+
+    fn assert_err(res: TestResult, expected: ErrorCode) {
+        let e = res.expect_err("expected error");
+        let code: u32 = expected.into();
+        assert!(
+            format!("{e:?}").contains(&code.to_string()) || format!("{e:?}").contains(&format!("{expected:?}")),
+            "expected {expected:?}, got {e:?}"
+        );
+    }
+
+    #[test]
+    fn normalizes_sol_usd_at_expo_minus_8_to_micro_usd() {
+        // Pyth publishes SOL/USD at expo=-8. For a $150.00000000 price:
+        //   raw price = 15_000_000_000, conf = 5_000_000 (0.05 micro-scale)
+        // Normalized to TARGET_PRICE_EXPO=-6 (micro-USD):
+        //   price = 150_000_000, conf = 50_000
+        let (p, c) = validate_and_normalize_price(15_000_000_000, 5_000_000, -8).unwrap();
+        assert_eq!(p, 150_000_000);
+        assert_eq!(c, 50_000);
+    }
+
+    #[test]
+    fn normalizes_coarser_scale_by_multiplying() {
+        // Fictional feed at expo=-4: raw price 1_500_000 = $150.0000
+        // Normalize to -6: multiply by 10^2 → 150_000_000.
+        let (p, _) = validate_and_normalize_price(1_500_000, 0, -4).unwrap();
+        assert_eq!(p, 150_000_000);
+    }
+
+    #[test]
+    fn normalizes_equal_scale_identity() {
+        // Feed already at expo=-6 → passthrough.
+        let (p, c) = validate_and_normalize_price(150_000_000, 500_000, -6).unwrap();
+        assert_eq!(p, 150_000_000);
+        assert_eq!(c, 500_000);
+    }
+
+    #[test]
+    fn rejects_zero_price_as_negative() {
+        assert_err(
+            validate_and_normalize_price(0, 0, -8),
+            ErrorCode::NegativePrice,
+        );
+    }
+
+    #[test]
+    fn rejects_negative_price_on_spot_feed() {
+        // Negative prices are legal for some derivatives but not for our
+        // spot-only vault. The `i64` type carries them through; we reject.
+        assert_err(
+            validate_and_normalize_price(-1, 0, -8),
+            ErrorCode::NegativePrice,
+        );
+    }
+
+    #[test]
+    fn rejects_exponent_below_minus_eighteen() {
+        assert_err(
+            validate_and_normalize_price(100, 0, -19),
+            ErrorCode::InvalidPriceExponent,
+        );
+    }
+
+    #[test]
+    fn rejects_positive_exponent() {
+        // exponent=1 would blow the u128 scaling in pathological cases
+        // and never corresponds to a legitimate Pyth spot feed.
+        assert_err(
+            validate_and_normalize_price(100, 0, 1),
+            ErrorCode::InvalidPriceExponent,
+        );
+    }
+
+    #[test]
+    fn rejects_confidence_above_one_percent() {
+        // price = $150 at expo=-8 → conf just over 1% (1_500_000_001).
+        // MAX_CONF_BPS = 100 (1%) — this must reject.
+        assert_err(
+            validate_and_normalize_price(15_000_000_000, 1_500_000_001, -8),
+            ErrorCode::PriceTooUncertain,
+        );
+    }
+
+    #[test]
+    fn accepts_confidence_exactly_at_one_percent_boundary() {
+        // conf/price == 1/100 exactly → boundary case, accepted.
+        let (p, c) = validate_and_normalize_price(15_000_000_000, 150_000_000, -8).unwrap();
+        assert_eq!(p, 150_000_000);
+        assert_eq!(c, 1_500_000); // 1% of the normalized price
+    }
+
+    #[test]
+    fn zero_confidence_is_always_acceptable() {
+        let (_, c) = validate_and_normalize_price(15_000_000_000, 0, -8).unwrap();
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn handles_large_price_without_overflow() {
+        // BTC at $100k: price = 10_000_000_000_000 at expo=-8. After /100
+        // → 100_000_000_000. Well within u64.
+        let (p, _) = validate_and_normalize_price(10_000_000_000_000, 0, -8).unwrap();
+        assert_eq!(p, 100_000_000_000);
+    }
+}
 
 #[cfg(test)]
 mod invariant_tests {

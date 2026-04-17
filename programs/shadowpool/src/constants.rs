@@ -64,3 +64,27 @@ pub const QUOTE_STALENESS_SLOTS: u64 = 150;
 /// Hard ceiling on caller-supplied slippage tolerance. Bounds the
 /// damage a buggy or malicious cranker can do. 500 bps = 5%.
 pub const MAX_ALLOWED_SLIPPAGE_BPS: u16 = 500;
+
+// =============================================================
+// Pyth oracle integration
+// =============================================================
+
+/// Program's internal fixed-point scale for asset prices. `-6` means
+/// prices are stored as micro-USD (matching USDC's 6 decimals), so
+/// `150_000_000` represents $150.000000. The Pyth reader normalises
+/// every feed into this scale regardless of the feed's native exponent.
+pub const TARGET_PRICE_EXPO: i32 = -6;
+
+/// Bounds on accepted Pyth exponent values. Feeds carry `expo: i32`;
+/// legitimate spot feeds publish in `[-18, 0]` (Pyth's documented
+/// range). Values outside this range are treated as corrupted or
+/// malicious and cause `InvalidPriceExponent`.
+pub const MIN_PYTH_EXPONENT: i32 = -18;
+pub const MAX_PYTH_EXPONENT: i32 = 0;
+
+/// Maximum allowed confidence interval, expressed as basis points of
+/// the absolute price. `100` bps = 1% — the industry-standard Pyth
+/// threshold (Sherlock-audit default; conservative for major pairs
+/// like SOL/USD). Reject if `conf/|price| > MAX_CONF_BPS/10_000`.
+/// Tighten toward 50 bps (0.5%) post-launch if feed quality allows.
+pub const MAX_CONF_BPS: u64 = 100;

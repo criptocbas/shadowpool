@@ -25,6 +25,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{Mint, TokenAccount, TokenInterface};
 use arcium_anchor::prelude::*;
+use pyth_solana_receiver_sdk::price_update::PriceUpdateV2;
 
 // `ArciumSignerAccount` is emitted by the #[arcium_program] macro at the
 // crate root (as a sibling of the program module). `ID` / `ID_CONST`
@@ -102,6 +103,21 @@ pub struct ComputeQuotes<'info> {
         bump = vault.bump,
     )]
     pub vault: Box<Account<'info, Vault>>,
+    // Pyth Pull Oracle price update.
+    //
+    // The account type pins ownership to the Pyth Solana Receiver
+    // program automatically. The constraint pins identity to the feed
+    // configured on this vault — without it, a malicious cranker could
+    // submit a different asset's feed (e.g. BONK/USD for a SOL/USD
+    // vault) and produce quotes off a wrong-asset price. Belt-and-
+    // braces: the handler also passes `vault.price_feed_id` to
+    // `get_price_no_older_than`, which repeats the feed-id check
+    // inside the SDK before returning a price.
+    #[account(
+        constraint = price_update.price_message.feed_id == vault.price_feed_id
+            @ ErrorCode::PriceFeedMismatch,
+    )]
+    pub price_update: Box<Account<'info, PriceUpdateV2>>,
     #[account(
         init_if_needed, space = 9, payer = cranker,
         seeds = [&SIGN_PDA_SEED], bump,
