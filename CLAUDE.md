@@ -180,7 +180,7 @@ deposit / withdraw (SPL token flow)
 - **Submission docs**: private `submission/` folder (gitignored, own git repo) contains founder letter, 3-min demo script, shot list, judge walkthrough, founder-market-fit doc, bio rewrite, MEV savings model, institutional scenario, competitor table, pitch deck outline, sponsor outreach drafts.
 
 ### Next priorities (Phase 1 — in order)
-1. **Pyth oracle integration** — replace the plaintext `oracle_price` parameter in `compute_quotes` with a real on-chain `PriceUpdateV2` feed account. Post-Phase-0 the cranker gate bounds exposure, but the caller can still feed stale/adversarial prices.
+1. ~~**Pyth oracle integration**~~ — ✅ shipped `de763d0` (2026-04-16). H-2 closed. Five-layer validation (owner / feed_id ×2 / staleness / sanity / u128 normalize). 11 Rust unit tests. Frontend fetches Hermes VAA and atomic-bundles with compute_quotes.
 2. **Meteora DLMM CPI skeleton in `execute_rebalance`** — at minimum swap path; LP path deferred.
 3. **H-3: Pre/post reload accounting in deposit/withdraw** — credit `balance_after - balance_before` instead of the pre-fee `amount`. Closes the remaining Token-2022 transfer-fee correctness gap (the extension allow-list rejects the extension entirely today, but the pattern is the right-long-term belt-and-braces).
 4. **M-1: Single-flight MPC guard** — `pending_state_computation: Option<u64>` on the vault; reject new queues while pending. Prevents `state_nonce` races between concurrent `update_balances` / `update_strategy` calls.
