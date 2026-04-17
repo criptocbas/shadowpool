@@ -20,9 +20,22 @@
   --accent-warning: oklch(0.75 0.15 60);
   --accent-danger: oklch(0.65 0.18 25);
 
-  --font-display: "Geist", system-ui, sans-serif;
-  --font-body: "Geist", system-ui, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, monospace;
+  --font-display: var(--font-instrument-serif), "Times New Roman", serif;
+  --font-body: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Editorial accent — a warm near-white for serif headlines. Slightly
+     off the pure white we use for mono data, so the two channels feel
+     distinct even at the same size. */
+  --text-editorial: oklch(0.96 0.012 80);
+
+  /* Ledger ruling — 1px horizontal line color for market-data tables,
+     distinct from border-subtle which is noisier. */
+  --rule-ledger: oklch(0.24 0.012 260);
+
+  /* Ticker background — slightly warmer than bg-surface so the ticker
+     feels like a distinct data stripe. */
+  --bg-ticker: oklch(0.095 0.011 260);
 }
 
 @theme inline {
@@ -356,4 +369,355 @@ body {
 
 .deposit-btn-active:hover {
   filter: brightness(1.1);
+}
+
+/* ═══════════════════════════════════════════════════════
+   UI Uplift — editorial typography + institutional motifs
+   ═══════════════════════════════════════════════════════ */
+
+/* Editorial serif for hero + closer. Optical-sized at display weight. */
+.font-editorial {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+/* Italic variant used in hero "encrypted." / "yours." reveal words. */
+.font-editorial-italic {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+}
+
+/* ─── Horizontal ticker ─────────────────────────────── */
+
+.ticker-track {
+  display: flex;
+  width: max-content;
+  animation: ticker-slide 60s linear infinite;
+}
+
+@keyframes ticker-slide {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+.ticker-item {
+  padding: 0 2.5rem;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* pause on user hover so copy is readable */
+.ticker:hover .ticker-track {
+  animation-play-state: paused;
+}
+
+/* ─── Hex dump ─────────────────────────────── */
+
+/* `xxd`-style grid. Row-number gutter + byte blocks + ASCII tail.
+   Makes ciphertext feel like a debugger view, not decoration. */
+.hex-dump {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--accent-encrypted);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.hex-dump-offset {
+  color: var(--text-tertiary);
+  opacity: 0.6;
+  user-select: none;
+}
+
+.hex-dump-byte {
+  display: inline-block;
+}
+
+.hex-dump-byte.hot {
+  color: var(--accent-revealed);
+  text-shadow: 0 0 6px oklch(0.72 0.15 155 / 0.4);
+}
+
+/* ─── Protocol flow diagram (replaces "How it works" cards) ─── */
+
+.flow-rail {
+  position: relative;
+  padding: 2rem 0 3rem;
+}
+
+/* Central horizontal rule connecting every stage */
+.flow-rail::before {
+  content: "";
+  position: absolute;
+  top: 4rem;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--border-medium) 8%,
+    var(--border-medium) 92%,
+    transparent 100%
+  );
+}
+
+.flow-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.flow-node {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 999px;
+  background: var(--bg-deep);
+  border: 1px solid var(--border-medium);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  position: relative;
+  z-index: 1;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.flow-stage[data-tone="encrypted"] .flow-node {
+  border-color: oklch(0.55 0.12 200 / 0.4);
+  color: var(--accent-encrypted);
+}
+
+.flow-stage[data-tone="revealed"] .flow-node {
+  border-color: oklch(0.72 0.15 155 / 0.4);
+  color: var(--accent-revealed);
+}
+
+.flow-stage[data-tone="danger"] .flow-node {
+  border-color: oklch(0.65 0.18 25 / 0.4);
+  color: var(--accent-danger);
+}
+
+/* little "pulse" on the active stage */
+.flow-stage[data-active="true"] .flow-node::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  opacity: 0.3;
+  animation: flow-pulse 2s ease-out infinite;
+}
+
+@keyframes flow-pulse {
+  0% { transform: scale(0.8); opacity: 0.6; }
+  100% { transform: scale(1.3); opacity: 0; }
+}
+
+/* ─── Market data table ─────────────────────────────── */
+
+.market-data-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 1.5rem;
+  align-items: center;
+  padding: 1.25rem 0;
+  border-bottom: 1px solid var(--rule-ledger);
+  transition: background 0.15s ease;
+}
+
+.market-data-row:last-child {
+  border-bottom: 0;
+}
+
+.market-data-row:hover {
+  background: oklch(0.125 0.011 260);
+}
+
+/* inline sparkline (SVG rendered by component) — keeps it tight */
+.sparkline path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ─── Verified footer — program id, commit, pyth feed, etc. ─── */
+
+.verified-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0;
+}
+
+.verified-cell {
+  padding: 1rem 1.25rem;
+  border-right: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.verified-cell:last-child {
+  border-right: 0;
+}
+
+@media (max-width: 720px) {
+  .verified-cell {
+    border-right: 0;
+  }
+}
+
+/* ─── Persona row — "Who this is for" ─── */
+
+.persona-row {
+  display: grid;
+  grid-template-columns: 4rem 1fr auto;
+  gap: 1.5rem;
+  align-items: baseline;
+  padding: 1.5rem 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.persona-row:last-child {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* ─── Scan-line ambience (very subtle) ──────────────── */
+
+/* 1px horizontal rule every 4px at 3% opacity — evokes CRT/terminal
+   without the tired "Matrix rain" cliche. Applied only to the hero. */
+.scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 3px,
+    oklch(1 0 0 / 0.013) 3px,
+    oklch(1 0 0 / 0.013) 4px
+  );
+  opacity: 0.6;
+  mix-blend-mode: overlay;
+}
+
+/* ─── "Live" stream log — fake-real event stream block ─── */
+
+.stream-log {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+.stream-log-entry {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.75rem;
+  padding: 0.15rem 0;
+}
+
+.stream-log-slot {
+  color: var(--text-tertiary);
+  opacity: 0.55;
+}
+
+.stream-log-event {
+  color: var(--text-secondary);
+}
+
+.stream-log-event[data-level="enc"] { color: var(--accent-encrypted); }
+.stream-log-event[data-level="rev"] { color: var(--accent-revealed); }
+.stream-log-event[data-level="warn"] { color: var(--accent-warning); }
+
+/* ─── Big terminal "LIVE" glyph in hero ─── */
+
+.hero-terminal {
+  background:
+    linear-gradient(180deg, oklch(0.12 0.012 260) 0%, oklch(0.105 0.012 260) 100%);
+  border: 1px solid oklch(0.28 0.025 200 / 0.35);
+  border-radius: 0.625rem;
+  box-shadow:
+    0 20px 60px oklch(0 0 0 / 0.45),
+    0 0 120px oklch(0.55 0.12 200 / 0.04),
+    inset 0 1px 0 oklch(1 0 0 / 0.025);
+  overflow: hidden;
+  position: relative;
+}
+
+.hero-terminal::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 3px,
+    oklch(1 0 0 / 0.008) 3px,
+    oklch(1 0 0 / 0.008) 4px
+  );
+  pointer-events: none;
+}
+
+.hero-terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid oklch(0.22 0.015 200 / 0.35);
+  background: oklch(0.09 0.012 260);
+}
+
+.hero-terminal-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent-encrypted);
+  box-shadow: 0 0 8px oklch(0.55 0.12 200 / 0.35);
+  animation: live-pulse 2s ease-in-out infinite;
+}
+
+/* ─── Number + sparkline treatment ─── */
+
+.metric-display-number {
+  font-family: var(--font-mono);
+  font-weight: 300;
+  font-feature-settings: "tnum";
+  letter-spacing: -0.02em;
+}
+
+/* ─── Editorial blockquote for closer ─── */
+
+.editorial-quote {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 1.1;
+  color: var(--text-editorial);
+}
+
+.editorial-quote em {
+  font-style: italic;
+  color: var(--accent-encrypted);
+}
+
+/* ─── Cursor blink for terminal prompt glyph ─── */
+
+@keyframes cursor-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+.cursor-blink {
+  animation: cursor-blink 1.1s step-end infinite;
 }

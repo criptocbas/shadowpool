@@ -10,9 +10,11 @@ import {
 import { useVault, useQuotes, useDeposit, useWithdraw } from "@/hooks";
 import { ConnectButton } from "@/components/ConnectButton";
 import { QUOTE_DECIMALS, SHARE_DECIMALS, toRawUnits } from "@/lib/units";
+import { getVaultPDA } from "@/lib/constants";
 import { MOCK_VAULT } from "./components/mock-vault";
 import { EncryptedField } from "./components/EncryptedField";
 import { MPCDivider, LockIcon } from "./components/MPCDivider";
+import { VerifiedIdentities } from "./components/VerifiedIdentities";
 
 // ─── Main Dashboard ───────────────────────────────────────────────────
 export default function VaultDashboard() {
@@ -221,26 +223,42 @@ export default function VaultDashboard() {
         </div>
       )}
 
+      {/* On-chain identifiers backing every claim on this page */}
+      <VerifiedIdentities
+        vaultPda={publicKey ? getVaultPDA(publicKey)[0] : null}
+        shareMint={vault?.shareMint ?? null}
+      />
+
       <div
         className={`transition-all duration-500 ${
           mounted ? "opacity-100" : "opacity-0"
         }`}
       >
         {/* Vault Header */}
-        <div className="px-6 md:px-10 pt-8 pb-6">
-          <div className="flex items-baseline gap-3 mb-1">
+        <div className="px-6 md:px-10 pt-10 pb-6">
+          <div
+            className="text-[10px] font-mono tracking-[0.25em] uppercase mb-3"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            · Reference vault
+          </div>
+          <div className="flex items-baseline gap-3 mb-2">
             <h1
-              className="text-2xl font-light tracking-tight"
-              style={{ color: "var(--text-primary)" }}
+              className="font-editorial text-[clamp(2rem,4vw,2.75rem)] tracking-tight"
+              style={{ color: "var(--text-editorial)" }}
             >
               {v.pair}
             </h1>
-            <span className="encrypted-badge text-[10px] font-mono px-2.5 py-1 rounded tracking-wider">
+            <span className="encrypted-badge text-[10px] font-mono px-2.5 py-1 rounded tracking-[0.2em]">
               ENCRYPTED
             </span>
           </div>
-          <p className="text-sm" style={{ color: "var(--text-tertiary)" }}>
-            Reference vault for the confidential execution layer &middot; Arcium MPC
+          <p
+            className="text-[13px]"
+            style={{ color: "var(--text-tertiary)" }}
+          >
+            Confidential execution layer on Solana — strategy inside Arcium
+            MPC, quotes revealed on-chain.
           </p>
         </div>
 
