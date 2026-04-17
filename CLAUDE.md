@@ -30,20 +30,26 @@ source .env.local && arcium test --cluster devnet --skip-build
 
 ```
 lib.rs        # declare_id! + #[arcium_program] with thin handlers (rustdoc'd).
-              # Also holds the Token-2022 mint-extension allow-list helper
-              # (enforce_mint_extension_allowlist) called from initialize_vault.
-constants.rs  # Comp-def offsets, ENCRYPTED_STATE_OFFSET, BPS ceilings
+              # Holds two handler-side helpers:
+              #   - enforce_mint_extension_allowlist (Token-2022 init-time check)
+              #   - read_pyth_price / validate_and_normalize_price (Pyth Pull
+              #     Oracle read + validation + exponent normalization)
+constants.rs  # Comp-def offsets, ENCRYPTED_STATE_OFFSET, BPS ceilings,
+              # Pyth tolerances (MAX_CONF_BPS, TARGET_PRICE_EXPO,
+              # MIN/MAX_PYTH_EXPONENT)
 state.rs      # #[account] Vault struct (MPC-byte-layout-sensitive!).
-              # Includes a `cranker: Pubkey` field (appended at the end so
-              # ENCRYPTED_STATE_OFFSET stays at 249) — see Authorization note below.
-errors.rs     # #[error_code] ErrorCode (20 variants, grouped by concern;
+              # Tail-appended config fields (all below encrypted_state so
+              # the offset stays at 249): cranker: Pubkey, price_feed_id:
+              # [u8; 32], max_price_age_seconds: u64.
+errors.rs     # #[error_code] ErrorCode (24 variants, grouped by concern;
               # append-only — stable numeric codes starting at 6000)
 events.rs     # 11 #[event] structs (every event carries slot: u64,
               # including CrankerSetEvent)
-contexts.rs   # All 18 #[derive(Accounts)] structs (queue / callback /
+contexts.rs   # 18 #[derive(Accounts)] structs (queue / callback /
               # init-comp-def / InitializeVault / Deposit / Withdraw /
-              # SetCranker / ExecuteRebalance), every vault ref seed-bound
-              # to its PDA
+              # SetCranker / ExecuteRebalance). Every vault ref seed-bound
+              # to its PDA; ComputeQuotes additionally carries a
+              # Pyth PriceUpdateV2 constrained to vault.price_feed_id.
 ```
 
 ### Arcis circuits — `encrypted-ixs/src/lib.rs` (5 circuits + unit tests)
@@ -152,7 +158,9 @@ deposit / withdraw (SPL token flow)
 
 13. **Cranker authorization model.** `compute_quotes`, `update_balances`, and `execute_rebalance` are all gated on `cranker.key() == vault.cranker` — a single uniform trust boundary for the MPC rebalance pipeline. At `initialize_vault` time `vault.cranker = authority` (self-cranking default). An authority-only `set_cranker(new_cranker)` instruction delegates the role to a hot wallet or third-party cranker without transferring vault ownership. Emits `CrankerSetEvent`. Replaces the legacy "authority-only on execute_rebalance, unrestricted on compute/update" split that shipped pre-Phase-0.
 
-14. **`InitializeVault` hardening.** Runs both Anchor-constraint checks AND a handler-side Token-2022 extension allow-list. Constraints: vault token accounts have `delegate.is_none()` + `close_authority.is_none()`; share mint has `freeze_authority.is_none()`; Token A and B mints are distinct. Handler: `enforce_mint_extension_allowlist(&mint)` rejects any of `PermanentDelegate`, `TransferFeeConfig`, `ConfidentialTransferMint`, `DefaultAccountState`, `NonTransferable`, `TransferHook` on all three mints (token_a, token_b, share). Legacy SPL Token mints skip the parse (owner check). Blocks the worst creator-time backdoor vectors, most notably a `PermanentDelegate` on a USDC-look-alike that would let a malicious creator drain user deposits.
+14. **`InitializeVault` hardening.** Runs both Anchor-constraint checks AND a handler-side Token-2022 extension allow-list. Constraints: vault token accounts have `delegate.is_none()` + `close_authority.is_none()`; share mint has `freeze_authority.is_none()`; Token A and B mints are distinct. Handler: `enforce_mint_extension_allowlist(&mint)` rejects any of `PermanentDelegate`, `TransferFeeConfig`, `ConfidentialTransferMint`, `DefaultAccountState`, `NonTransferable`, `TransferHook` on all three mints (token_a, token_b, share). Legacy SPL Token mints skip the parse (owner check). Blocks the worst creator-time backdoor vectors, most notably a `PermanentDelegate` on a USDC-look-alike that would let a malicious creator drain user deposits. Also stores the per-vault Pyth feed configuration (`price_feed_id` + `max_price_age_seconds`) so different vaults can point at different oracle feeds without a program upgrade.
+
+15. **Pyth Pull Oracle integration.** `compute_quotes` reads price + conf from a `PriceUpdateV2` account supplied by the cranker. Five-layer defence: (1) Anchor enforces Pyth receiver program ownership via `Account<PriceUpdateV2>`; (2) context constraint pins `price_update.price_message.feed_id == vault.price_feed_id` — blocks wrong-asset feeds (BONK for a SOL vault); (3) SDK's `get_price_no_older_than` enforces `vault.max_price_age_seconds` + re-checks feed_id; (4) handler enforces `price > 0` (spot-only), `exponent ∈ [-18, 0]`, and `conf/|price| ≤ MAX_CONF_BPS/10_000` (1% default); (5) u128 checked-math normalization to `TARGET_PRICE_EXPO = -6` (micro-USD). No floats. `validate_and_normalize_price` is a pure function tested by 11 fixture-based Rust unit tests — the on-chain integration tests need a real `PriceUpdateV2` and are skipped on localnet unless `PYTH_TEST=1` is set with the Pyth receiver cloned into the test validator.
 
 15. **Don't import `@arcium-hq/client` in client components.** Its ESM bundle imports `fs` unconditionally, which breaks `next build`. The seven PDA helpers we need (MXE / Mempool / Execpool / Cluster / Computation / CompDef / CompDefOffset) are reimplemented browser-safe in `app/src/lib/arcium-pdas.ts`. If you ever need `uploadCircuit` or similar Node-side helpers, put them in a server action, not a `"use client"` file.
 
@@ -163,11 +171,11 @@ deposit / withdraw (SPL token flow)
 ### Shipped
 - **Program**: 20 instructions, modular src/ layout, `token_interface` migration done, rustdoc on every public instruction.
 - **Circuits**: 5 circuits, safe-divisor applied, u128 arithmetic hardening throughout.
-- **Tests**: **7/7 integration tests passing** on localnet in ~45s (post-Phase-0). 11 Arcis pure-math unit tests + 1 offset invariant test + 5 Arcis `#[instruction]` generated tests, all green via `cargo test --workspace --lib` in ~3s.
+- **Tests**: **9 integration tests** (6 localnet-runnable + 3 Pyth-gated), all the localnet ones green in ~25s. **29 unit tests** (16 Arcis + 11 Pyth normalization + 1 offset invariant + 1 program ID) all green via `cargo test --workspace --lib` in ~3s.
 - **Typed IDL end-to-end**: `Program<Shadowpool>` everywhere, `VaultData` derived from `IdlAccounts<Shadowpool>` — no `as any` casts in hooks.
-- **Security**: NAV-aware share pricing, staleness guard, uniform `cranker` gate across the MPC rebalance pipeline (compute_quotes / update_balances / execute_rebalance), `nav_basis > 0` guard in deposit/withdraw, seed binding on every vault context, `transfer_checked`, vault init hardening (no freeze / delegate / close authority, distinct mints, Token-2022 extension allow-list).
-- **Devnet deployed**: program live at `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`. 3 of 5 comp defs initialized (last 2 pending — devnet flakiness). Post-Phase-0 the on-chain layout includes the new `cranker` field; existing devnet vault accounts predate the new layout and need `arcium clean --only-accounts` + redeploy before devnet testing resumes.
-- **Frontend**: `next build` succeeds (static prerender of / and /vault). React Compiler enabled. Browser-safe Arcium PDA helpers replace the Node-dependent `@arcium-hq/client` imports. `@solana/web3.js` pinned to `1.95.8` via yarn resolution (1.98.x is Anchor-incompatible). `useQuotes` runtime-validates event shape; `useComputeQuotes` no longer uses `skipPreflight`.
+- **Security**: NAV-aware share pricing, staleness guard, uniform `cranker` gate across the MPC rebalance pipeline (compute_quotes / update_balances / execute_rebalance), `nav_basis > 0` guard in deposit/withdraw, seed binding on every vault context, `transfer_checked`, vault init hardening (no freeze / delegate / close authority, distinct mints, Token-2022 extension allow-list), **five-layer Pyth Pull Oracle validation** on `compute_quotes` (owner / feed_id x2 / staleness / positive+exponent+conf / u128 normalization).
+- **Devnet deployed**: program live at `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`. 3 of 5 comp defs initialized (last 2 pending — devnet flakiness). Post-Phase-0/1 the on-chain layout added `cranker`, `price_feed_id`, `max_price_age_seconds` fields; existing devnet vault accounts predate the new layout and need `arcium clean --only-accounts` + redeploy before devnet testing resumes.
+- **Frontend**: `next build` succeeds (static prerender of / and /vault). React Compiler enabled. Browser-safe Arcium PDA helpers replace the Node-dependent `@arcium-hq/client` imports. `@solana/web3.js` pinned to `1.95.8` via yarn resolution (1.98.x is Anchor-incompatible). `useQuotes` runtime-validates event shape. `useComputeQuotes` fetches a fresh Pyth VAA from Hermes, posts it via `@pythnetwork/pyth-solana-receiver` (ephemeral, rent-reclaimed), and bundles `compute_quotes` into the same atomic transaction.
 - **CI**: GitHub Actions runs `cargo check`, `cargo test --lib`, and frontend `tsc` on every push.
 - **Submission docs**: private `submission/` folder (gitignored, own git repo) contains founder letter, 3-min demo script, shot list, judge walkthrough, founder-market-fit doc, bio rewrite, MEV savings model, institutional scenario, competitor table, pitch deck outline, sponsor outreach drafts.
 
