@@ -81,6 +81,10 @@ pub enum ErrorCode {
     #[msg("Another MPC state-mutating computation is already in flight; wait for its callback or authority emergency_override")]
     StateComputationPending,
 
+    // --- Vault closure ---
+    #[msg("Vault is not empty — total_shares or total_deposits_b is non-zero; drain before closing")]
+    VaultNotEmpty,
+
     // --- Meteora DLMM swap validation ---
     #[msg("Swap direction must be 0 (base→quote) or 1 (quote→base)")]
     InvalidSwapDirection,

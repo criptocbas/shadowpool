@@ -1121,6 +1121,97 @@ pub mod shadowpool {
     }
 
     // ==========================================================
+    // CLOSE VAULT — authority reclaims rent from an empty vault
+    // ==========================================================
+
+    /// Authority-only: close the vault PDA and return its rent
+    /// balance to the authority's wallet.
+    ///
+    /// Two paths:
+    ///
+    /// 1. **Empty-vault path (normal).** If the vault account
+    ///    deserializes under the current `Vault` schema, enforce
+    ///    `total_shares == 0` AND `total_deposits_b == 0` before
+    ///    closure — LP safety. Any outstanding position blocks close.
+    ///
+    /// 2. **Legacy-layout path (rescue).** If deserialization fails
+    ///    (account pre-dates the current layout), skip the
+    ///    invariant check. Authority is the sole trust anchor; this
+    ///    path lets operators wind down stale test or pre-upgrade
+    ///    vaults without a program re-deployment cycle.
+    ///
+    /// The vault's token accounts and share mint stay intact and can
+    /// be independently closed via standard `spl-token` tooling. A
+    /// drained vault will have zero-balance token accounts that
+    /// close trivially to any owner-specified recipient.
+    ///
+    /// Emits `VaultClosedEvent` with the reclaimed lamports and a
+    /// `was_legacy_layout` flag so indexers can audit the two paths.
+    pub fn close_vault(ctx: Context<CloseVault>) -> Result<()> {
+        let vault_info = ctx.accounts.vault.to_account_info();
+        let authority_info = ctx.accounts.authority.to_account_info();
+
+        // Program ownership check — never close an account we don't
+        // own. This is defence-in-depth; the seeds constraint on the
+        // context already proves it's our PDA, but we verify raw
+        // ownership at the AccountInfo level.
+        require!(
+            vault_info.owner == &crate::ID,
+            ErrorCode::Unauthorized
+        );
+
+        // Invariant enforcement when possible.
+        let was_legacy_layout: bool;
+        {
+            let data = vault_info.try_borrow_data()?;
+            match state::Vault::try_deserialize(&mut &data[..]) {
+                Ok(vault) => {
+                    require!(
+                        vault.authority == ctx.accounts.authority.key(),
+                        ErrorCode::Unauthorized
+                    );
+                    require!(vault.total_shares == 0, ErrorCode::VaultNotEmpty);
+                    require!(vault.total_deposits_b == 0, ErrorCode::VaultNotEmpty);
+                    was_legacy_layout = false;
+                }
+                Err(_) => {
+                    // Legacy layout — no invariant check is possible.
+                    // Authority + seed binding are the only gate.
+                    was_legacy_layout = true;
+                    msg!(
+                        "close_vault: legacy layout ({} bytes); authority-only path",
+                        data.len()
+                    );
+                }
+            }
+        }
+
+        // Transfer lamports + zero-size the account. This is the
+        // standard Anchor-style "close" without using the `close = …`
+        // attribute (which requires a typed `Account`).
+        let lamports = vault_info.lamports();
+        **authority_info.try_borrow_mut_lamports()? = authority_info
+            .lamports()
+            .checked_add(lamports)
+            .ok_or(ErrorCode::MathOverflow)?;
+        **vault_info.try_borrow_mut_lamports()? = 0;
+
+        // Reassign ownership back to system and realloc to 0.
+        vault_info.assign(&anchor_lang::solana_program::system_program::ID);
+        vault_info.resize(0)?;
+
+        emit!(VaultClosedEvent {
+            vault: vault_info.key(),
+            authority: ctx.accounts.authority.key(),
+            lamports_returned: lamports,
+            was_legacy_layout,
+            slot: Clock::get()?.slot,
+        });
+
+        Ok(())
+    }
+
+    // ==========================================================
     // EXECUTE REBALANCE — read persisted quotes, CPI into DEX
     // ==========================================================
     // Called by the authority after compute_quotes writes fresh quotes.

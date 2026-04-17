@@ -112,3 +112,16 @@ pub struct EmergencyOverrideEvent {
     pub previous_pending_state: Option<u64>,
     pub slot: u64,
 }
+
+/// Emitted when `close_vault` reclaims a Vault PDA's rent back to the
+/// authority. `was_legacy_layout = true` when the vault pre-dated the
+/// current serialization layout (rescue path); `false` when it
+/// deserialized cleanly and passed the empty-vault invariants.
+#[event]
+pub struct VaultClosedEvent {
+    pub vault: Pubkey,
+    pub authority: Pubkey,
+    pub lamports_returned: u64,
+    pub was_legacy_layout: bool,
+    pub slot: u64,
+}

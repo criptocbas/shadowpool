@@ -673,6 +673,41 @@ pub struct EmergencyOverride<'info> {
     pub vault: Box<Account<'info, Vault>>,
 }
 
+/// Authority-only: close the vault PDA and return its rent to the
+/// authority. Uses `UncheckedAccount` + manual in-handler deserialize
+/// so this instruction can rescue vaults whose byte layout is older
+/// than the current `Vault` struct (legacy deployments). For vaults
+/// that deserialize cleanly, the handler enforces the empty-vault
+/// invariants (`total_shares == 0`, `total_deposits_b == 0`) before
+/// closing — LP safety. For legacy layouts, authority is the sole
+/// trust anchor.
+///
+/// The vault's token accounts and share mint are **not** closed here
+/// — they're independent SPL accounts and can be closed with standard
+/// `spl-token close` tooling. A fully-drained vault will have token
+/// accounts with zero balances that close trivially.
+#[derive(Accounts)]
+pub struct CloseVault<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    /// The vault PDA to close. Unchecked so we can handle legacy-layout
+    /// accounts; the seed binding ensures authority-specific derivation,
+    /// and the handler manually verifies program ownership before any
+    /// lamport movement.
+    ///
+    /// CHECK: validated in-handler (program ownership + authority seed
+    /// derivation); deserialize attempted for invariant enforcement.
+    #[account(
+        mut,
+        seeds = [b"vault", authority.key().as_ref()],
+        bump,
+    )]
+    pub vault: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
 /// Executes a DLMM swap to rebalance the vault. The account set
 /// enumerates every account the Meteora DLMM `swap` instruction needs
 /// (IDL order preserved). Bin arrays are passed via `remaining_accounts`
