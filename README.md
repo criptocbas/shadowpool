@@ -12,7 +12,7 @@ Built on Arcium's mainnet-alpha MPC network, Pyth Pull Oracle, and Meteora DLMM.
 ```
 
 - **Live on devnet:** [`BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`](https://explorer.solana.com/address/BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g?cluster=devnet)
-- **Audit posture:** 4 High findings closed, 4 Medium closed, 1 documented intent. See [`submission/audit-response.md`](submission/audit-response.md).
+- **Audit posture:** 4 High findings closed, 4 Medium closed, 1 documented intent. See [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md).
 - **Tests:** 30 unit tests + 6 localnet integration tests + 3 Pyth-gated tests; all green.
 
 ---
@@ -179,7 +179,7 @@ A full professional audit was performed against the Phase-0 state. Four High fin
 | M-4 `nav_basis == 0` guard | Medium | Closed | `9c94969` — `ZeroNavBasis` error |
 | M-5 frontend `skipPreflight` | Medium | Closed | `60873c7` |
 
-Full narrative with diffs in [`submission/audit-response.md`](submission/audit-response.md).
+Full narrative with diffs in [`AUDIT_RESPONSE.md`](AUDIT_RESPONSE.md).
 
 **Defence-in-depth features shipped:**
 
