@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Ticker } from "@/components/landing/Ticker";
 import { LiveTerminal } from "@/components/landing/LiveTerminal";
 import { MarketData } from "@/components/landing/MarketData";
+import { MevSavingsCounter } from "@/components/landing/MevSavingsCounter";
 import { ProtocolFlow } from "@/components/landing/ProtocolFlow";
 import { PersonaRows } from "@/components/landing/PersonaRows";
 import { VerifiedFooter } from "@/components/landing/VerifiedFooter";
@@ -250,6 +251,18 @@ export default function LandingPage() {
           </div>
 
           <MarketData />
+        </section>
+
+        {/* ═══ MEV Savings Counter ═══
+           Live-ticking projection; sits between the static market-data
+           ledger and the protocol-flow diagram so the "how big is the
+           problem" narrative (stats → live counter → solution) reads
+           as a progression. */}
+        <section
+          className="px-6 md:px-10 lg:px-16 py-20"
+          style={{ borderBottom: "1px solid var(--border-subtle)" }}
+        >
+          <MevSavingsCounter />
         </section>
 
         {/* ═══ Protocol Flow ═══ */}
