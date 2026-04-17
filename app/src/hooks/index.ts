@@ -5,3 +5,5 @@ export type { QuotesData } from "./useQuotes";
 export { useDeposit } from "./useDeposit";
 export { useWithdraw } from "./useWithdraw";
 export { useComputeQuotes } from "./useComputeQuotes";
+export { useTokenBalance } from "./useTokenBalance";
+export type { TokenBalance } from "./useTokenBalance";

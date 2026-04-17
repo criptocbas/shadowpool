@@ -7,7 +7,7 @@ import {
   getAssociatedTokenAddress,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { useVault, useQuotes, useDeposit, useWithdraw } from "@/hooks";
+import { useVault, useQuotes, useDeposit, useWithdraw, useTokenBalance } from "@/hooks";
 import { ConnectButton } from "@/components/ConnectButton";
 import { QUOTE_DECIMALS, SHARE_DECIMALS, toRawUnits } from "@/lib/units";
 import { getVaultPDA } from "@/lib/constants";
@@ -15,6 +15,7 @@ import { MOCK_VAULT } from "./components/mock-vault";
 import { EncryptedField } from "./components/EncryptedField";
 import { MPCDivider, LockIcon } from "./components/MPCDivider";
 import { VerifiedIdentities } from "./components/VerifiedIdentities";
+import { ActivityStream } from "./components/ActivityStream";
 
 // ─── Main Dashboard ───────────────────────────────────────────────────
 export default function VaultDashboard() {
@@ -40,6 +41,22 @@ export default function VaultDashboard() {
     error: withdrawError,
     txSig: withdrawTxSig,
   } = useWithdraw(publicKey ?? null);
+
+  // Live SPL balance for whichever side is active in the tab switcher.
+  // Depositing shows USDC (token_b) balance; withdrawing shows share
+  // mint balance. Only fires when a vault actually exists.
+  const { balance: quoteBalance } = useTokenBalance(
+    publicKey ?? null,
+    vault?.tokenBMint ?? null,
+    QUOTE_DECIMALS,
+  );
+  const { balance: shareBalance } = useTokenBalance(
+    publicKey ?? null,
+    vault?.shareMint ?? null,
+    SHARE_DECIMALS,
+  );
+  const activeBalance = activeTab === "deposit" ? quoteBalance : shareBalance;
+  const activeBalanceLabel = activeTab === "deposit" ? "USDC" : "spTokens";
 
   // Surface the relevant tx feedback regardless of active tab.
   const txError = depositError ?? withdrawError;
@@ -631,7 +648,12 @@ export default function VaultDashboard() {
                     {activeTab === "deposit" ? "Amount (USDC)" : "Shares"}
                   </span>
                   <span className="font-mono normal-case tracking-normal">
-                    Balance: —
+                    Balance:{" "}
+                    {connected && activeBalance
+                      ? `${activeBalance.display.toLocaleString(undefined, {
+                          maximumFractionDigits: 4,
+                        })} ${activeBalanceLabel}`
+                      : "—"}
                   </span>
                 </div>
 
@@ -644,19 +666,40 @@ export default function VaultDashboard() {
                 >
                   <input
                     type="text"
+                    inputMode="decimal"
                     value={depositAmount}
-                    onChange={(e) => setDepositAmount(e.target.value)}
+                    onChange={(e) => {
+                      // Accept digits + one optional decimal point.
+                      const v = e.target.value;
+                      if (v === "" || /^\d*\.?\d*$/.test(v)) {
+                        setDepositAmount(v);
+                      }
+                    }}
                     placeholder="0.00"
                     className="flex-1 bg-transparent outline-none font-mono text-sm"
                     style={{ color: "var(--text-primary)" }}
                   />
                   <button
-                    className="text-[10px] tracking-wider uppercase px-2 py-1 rounded transition-colors"
+                    disabled={!activeBalance || activeBalance.display === 0}
+                    className="text-[10px] tracking-wider uppercase px-2 py-1 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     style={{
                       color: "var(--accent-encrypted)",
                       background: "var(--bg-raised)",
                     }}
-                    onClick={() => setDepositAmount("1000")}
+                    onClick={() => {
+                      if (activeBalance) {
+                        // Truncate to the token's decimal precision to
+                        // avoid rounding past the real balance.
+                        const precision =
+                          activeTab === "deposit" ? QUOTE_DECIMALS : SHARE_DECIMALS;
+                        setDepositAmount(activeBalance.display.toFixed(precision));
+                      }
+                    }}
+                    title={
+                      activeBalance
+                        ? `Fill with full balance (${activeBalance.display} ${activeBalanceLabel})`
+                        : "No balance"
+                    }
                   >
                     Max
                   </button>
@@ -738,6 +781,11 @@ export default function VaultDashboard() {
                   </a>
                 )}
               </div>
+            </div>
+
+            {/* Live activity — program log aesthetic */}
+            <div className="mt-6">
+              <ActivityStream />
             </div>
 
             {/* Strategy Status */}
