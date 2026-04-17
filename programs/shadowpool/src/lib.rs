@@ -152,6 +152,101 @@ fn validate_and_normalize_price(price: i64, conf: u64, exponent: i32) -> Result<
     Ok((price_u64, conf_u64))
 }
 
+/// Compute the expected `amount_out` for a DLMM swap given the MPC-
+/// revealed quote price and the size on the chosen side. Also enforces
+/// the size cap (`amount_in` must be within the MPC-revealed size).
+///
+/// Factored out of `execute_rebalance` so the math can be exhaustively
+/// unit-tested and fuzzed without a live DLMM program or a constructed
+/// on-chain `Vault`. Every reject path has a dedicated fixture test in
+/// `dlmm_math_tests` below.
+///
+/// Semantics:
+/// - `swap_direction == 0` (base→quote): `amount_in` is in base-raw
+///   units. Returns `amount_in * ask_price / base_scale` (quote-raw).
+///   Cap: `amount_in ≤ ask_size * base_scale`.
+/// - `swap_direction == 1` (quote→base): `amount_in` is in quote-raw
+///   units. Returns `amount_in * base_scale / bid_price` (base-raw).
+///   Cap: `amount_in / bid_price ≤ bid_size`.
+/// - Other directions: `InvalidSwapDirection`.
+///
+/// All multiplication and division goes through u128 checked ops; any
+/// overflow surfaces as `MathOverflow` rather than silently wrapping.
+fn compute_expected_amount_out(
+    swap_direction: u8,
+    amount_in: u64,
+    mpc_bid_price: u64,
+    mpc_ask_price: u64,
+    mpc_bid_size: u64,
+    mpc_ask_size: u64,
+    base_decimals: u8,
+) -> Result<u64> {
+    let base_scale: u128 = 10u128
+        .checked_pow(base_decimals as u32)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+    match swap_direction {
+        0 => {
+            // base → quote
+            let cap = (mpc_ask_size as u128)
+                .checked_mul(base_scale)
+                .ok_or(ErrorCode::MathOverflow)?;
+            require!(
+                (amount_in as u128) <= cap,
+                ErrorCode::SwapAmountExceedsMpcSize
+            );
+
+            let out = (amount_in as u128)
+                .checked_mul(mpc_ask_price as u128)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(base_scale)
+                .ok_or(ErrorCode::MathOverflow)?;
+            u64::try_from(out).map_err(|_| error!(ErrorCode::MathOverflow))
+        }
+        1 => {
+            // quote → base
+            require!(mpc_bid_price > 0, ErrorCode::ZeroNavBasis);
+
+            let equivalent_base = (amount_in as u128)
+                .checked_div(mpc_bid_price as u128)
+                .ok_or(ErrorCode::MathOverflow)?;
+            require!(
+                equivalent_base <= mpc_bid_size as u128,
+                ErrorCode::SwapAmountExceedsMpcSize
+            );
+
+            let out = (amount_in as u128)
+                .checked_mul(base_scale)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(mpc_bid_price as u128)
+                .ok_or(ErrorCode::MathOverflow)?;
+            u64::try_from(out).map_err(|_| error!(ErrorCode::MathOverflow))
+        }
+        _ => Err(error!(ErrorCode::InvalidSwapDirection)),
+    }
+}
+
+/// Compute the minimum acceptable `amount_out` given a program-derived
+/// `expected_out` and the hard slippage ceiling. Cranker-supplied
+/// `min_amount_out` must be ≥ this floor — the cranker can only
+/// *tighten* slippage, never loosen it beyond the program's cap.
+///
+/// Floor = `expected_out * (10_000 - max_slippage_bps_ceiling) / 10_000`.
+fn compute_safety_floor(
+    expected_out: u64,
+    max_slippage_bps_ceiling: u16,
+) -> Result<u64> {
+    let safety_factor = (10_000u64)
+        .checked_sub(max_slippage_bps_ceiling as u64)
+        .ok_or(ErrorCode::MathOverflow)?;
+    let floor = (expected_out as u128)
+        .checked_mul(safety_factor as u128)
+        .ok_or(ErrorCode::MathOverflow)?
+        .checked_div(10_000u128)
+        .ok_or(ErrorCode::MathOverflow)?;
+    u64::try_from(floor).map_err(|_| error!(ErrorCode::MathOverflow))
+}
+
 /// Rejects any mint that carries a disallowed Token-2022 extension. Legacy
 /// SPL Token mints (owner = `spl_token::ID`) have no extensions and pass
 /// trivially.
@@ -1219,15 +1314,11 @@ pub mod shadowpool {
         let should_rebalance = vault.last_should_rebalance;
         require!(should_rebalance == 1, ErrorCode::RebalanceNotNeeded);
 
-        // --- 3. Size cap — amount_in bounded by the MPC-revealed size
-        //        for the chosen direction. bid_size is the base-unit
-        //        quantity we'd buy (quote→base); ask_size is the base-
-        //        unit quantity we'd sell (base→quote). The MPC values
-        //        are in base-whole-units; callers supplying raw amounts
-        //        should multiply by 10^base_decimals client-side, so we
-        //        compare scaled values. Audit note: this check is the
-        //        *ceiling*, not a size-fidelity check; a cranker that
-        //        under-swaps is allowed (e.g. splitting the rebalance). ---
+        // --- 3. Resolve base side + decimals from the DLMM pool ---
+        //
+        // DLMM pools declare their own token_x/token_y ordering, which
+        // may or may not match the vault's token_a/token_b. Pick the
+        // Mint account that corresponds to the vault's BASE token.
         let vault_a_is_x = ctx.accounts.token_x_mint.key() == vault.token_a_mint;
         let base_mint_info = if vault_a_is_x {
             &ctx.accounts.token_x_mint
@@ -1235,100 +1326,28 @@ pub mod shadowpool {
             &ctx.accounts.token_y_mint
         };
         let base_decimals = base_mint_info.decimals;
-        let base_scale: u128 = 10u128
-            .checked_pow(base_decimals as u32)
-            .ok_or(ErrorCode::MathOverflow)?;
 
-        // --- 4. Direction-aware price/size picking + safety floor ---
+        // --- 4. Compute expected_out + enforce size cap (pure helper) ---
+        let expected_out = compute_expected_amount_out(
+            swap_direction,
+            amount_in,
+            bid_price,
+            ask_price,
+            bid_size,
+            ask_size,
+            base_decimals,
+        )?;
+
+        // --- 5. MPC-anchored slippage floor ---
         //
-        // Prices are MPC-revealed in TARGET_PRICE_EXPO (-6 micro-USD)
-        // per *whole base unit*. For the cross to SPL raw units we divide
-        // amount_in by base_scale where appropriate.
-        //
-        // For base→quote (direction 0): out (quote-raw) = amount_in *
-        //   ask_price / base_scale. The quote side is assumed to share
-        //   TARGET_PRICE_EXPO (micro-USD) — holds for USDC-style 6-dec
-        //   quote mints; document the assumption for non-6-dec quote
-        //   deployments.
-        //
-        // For quote→base (direction 1): out (base-raw) = amount_in *
-        //   base_scale / bid_price. Requires bid_price > 0; enforce.
-        let (mpc_size_cap, expected_out): (u64, u64) = match swap_direction {
-            0 => {
-                // base→quote
-                // amount_in is in base-raw; compare to ask_size scaled up.
-                let ask_size_raw = (ask_size as u128)
-                    .checked_mul(base_scale)
-                    .ok_or(ErrorCode::MathOverflow)?;
-                let cap_u64: u64 = ask_size_raw
-                    .try_into()
-                    .unwrap_or(u64::MAX);
-
-                let out_u128 = (amount_in as u128)
-                    .checked_mul(ask_price as u128)
-                    .ok_or(ErrorCode::MathOverflow)?
-                    .checked_div(base_scale)
-                    .ok_or(ErrorCode::MathOverflow)?;
-                let out_u64: u64 = out_u128
-                    .try_into()
-                    .map_err(|_| ErrorCode::MathOverflow)?;
-                (cap_u64, out_u64)
-            }
-            _ => {
-                // 1: quote→base
-                require!(bid_price > 0, ErrorCode::ZeroNavBasis);
-                // bid_size is in base-whole-units; convert amount_in
-                // (quote-raw) to the same base-whole scale for comparison.
-                let equivalent_base = (amount_in as u128)
-                    .checked_div(bid_price as u128)
-                    .ok_or(ErrorCode::MathOverflow)?;
-                let cap_u64: u64 = bid_size;
-
-                let out_u128 = (amount_in as u128)
-                    .checked_mul(base_scale)
-                    .ok_or(ErrorCode::MathOverflow)?
-                    .checked_div(bid_price as u128)
-                    .ok_or(ErrorCode::MathOverflow)?;
-                let out_u64: u64 = out_u128
-                    .try_into()
-                    .map_err(|_| ErrorCode::MathOverflow)?;
-                // Use equivalent_base for the cap check instead of raw.
-                let equivalent_u64: u64 = equivalent_base
-                    .try_into()
-                    .unwrap_or(u64::MAX);
-                require!(
-                    equivalent_u64 <= cap_u64,
-                    ErrorCode::SwapAmountExceedsMpcSize
-                );
-                // Reuse cap_u64 for the event; it's in base-whole units.
-                (cap_u64, out_u64)
-            }
-        };
-        // Size cap check for direction 0 (deferred here because the
-        // branch-specific comparison is clearer inline).
-        if swap_direction == 0 {
-            require!(amount_in <= mpc_size_cap, ErrorCode::SwapAmountExceedsMpcSize);
-        }
-
-        // --- 5. MPC-anchored slippage floor. Cranker-supplied
-        //        min_amount_out must be ≥ expected_out * (1 - MAX_CAP).
-        //        Cranker can tighten slippage (pass a higher min_out) but
-        //        cannot loosen beyond MAX_ALLOWED_SLIPPAGE_BPS. Note we
-        //        compare against MAX_ALLOWED_SLIPPAGE_BPS (the cap), not
-        //        `max_slippage_bps` (the cranker's arg) — otherwise a
-        //        malicious cranker could pass max_slippage_bps=5% +
-        //        min_out=0 and bypass the floor. ---
-        let safety_factor = (10_000u64)
-            .checked_sub(MAX_ALLOWED_SLIPPAGE_BPS as u64)
-            .ok_or(ErrorCode::MathOverflow)?;
-        let safety_floor = (expected_out as u128)
-            .checked_mul(safety_factor as u128)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(10_000u128)
-            .ok_or(ErrorCode::MathOverflow)?;
-        let safety_floor_u64: u64 = safety_floor
-            .try_into()
-            .map_err(|_| ErrorCode::MathOverflow)?;
+        // Cranker-supplied `min_amount_out` must be ≥ the program-
+        // derived floor. The cranker can tighten slippage (pass a
+        // higher min_out) but cannot loosen it beyond the hard
+        // MAX_ALLOWED_SLIPPAGE_BPS cap — we deliberately compare
+        // against the program cap, not the cranker's
+        // `max_slippage_bps` arg, so a malicious cranker cannot pass
+        // `max_slippage_bps=5%` + `min_out=0` and bypass the floor.
+        let safety_floor_u64 = compute_safety_floor(expected_out, MAX_ALLOWED_SLIPPAGE_BPS)?;
         require!(
             min_amount_out >= safety_floor_u64,
             ErrorCode::SlippageFloorViolated
@@ -1402,7 +1421,6 @@ pub mod shadowpool {
         );
 
         // --- 11. Mark quotes consumed + NAV stale + emit event ---
-        let _ = mpc_size_cap; // used only for the require! above
         let vault = &mut ctx.accounts.vault;
         vault.quotes_consumed = true;
         vault.nav_stale = true;
@@ -1554,6 +1572,302 @@ mod pyth_normalization_tests {
         // → 100_000_000_000. Well within u64.
         let (p, _) = validate_and_normalize_price(10_000_000_000_000, 0, -8).unwrap();
         assert_eq!(p, 100_000_000_000);
+    }
+
+    #[test]
+    fn normalizes_at_zero_exponent() {
+        // Some feeds publish at exponent 0 (integer whole units).
+        // price = 150 at expo=0 → "150 whole units" = 150_000_000 micro.
+        let (p, c) = validate_and_normalize_price(150, 1, 0).unwrap();
+        assert_eq!(p, 150_000_000);
+        assert_eq!(c, 1_000_000);
+    }
+
+    #[test]
+    fn normalizes_at_min_exponent() {
+        // expo = -18 is the lower bound. 1_000_000_000_000 at -18 → /10^12 = 1.
+        let (p, _) = validate_and_normalize_price(1_000_000_000_000, 0, -18).unwrap();
+        assert_eq!(p, 1);
+    }
+
+    #[test]
+    fn rejects_tight_conf_strictly_over_one_percent() {
+        // exactly 100bps + 1 ulp over should still reject.
+        assert_err(
+            validate_and_normalize_price(10_000, 101, -6),
+            ErrorCode::PriceTooUncertain,
+        );
+    }
+
+    #[test]
+    fn accepts_conf_at_half_percent() {
+        // 50bps conf — comfortably inside the 100bps limit.
+        let (p, c) = validate_and_normalize_price(200_000_000, 1_000_000, -6).unwrap();
+        assert_eq!(p, 200_000_000);
+        assert_eq!(c, 1_000_000);
+    }
+
+    #[test]
+    fn huge_conf_with_huge_price_still_enforces_ratio() {
+        // $1B feed (1e15 micro) with $12M conf (1.2% of price) — reject.
+        assert_err(
+            validate_and_normalize_price(1_000_000_000_000_000, 12_000_000_000_000, -6),
+            ErrorCode::PriceTooUncertain,
+        );
+    }
+}
+
+#[cfg(test)]
+mod dlmm_math_tests {
+    //! Unit tests for `compute_expected_amount_out` and
+    //! `compute_safety_floor` — the pure-math core of the DLMM swap
+    //! integration. Covers each reject path (InvalidSwapDirection,
+    //! ZeroNavBasis for quote→base, SwapAmountExceedsMpcSize on each
+    //! side, MathOverflow on the scaling edge).
+    //!
+    //! Fixtures use SOL/USDC-style scales:
+    //!   - base_decimals = 9 (SOL lamports)
+    //!   - quote decimals = 6 (micro-USDC, implicit via TARGET_PRICE_EXPO)
+    //!   - prices in micro-USD per whole SOL
+    //!
+    //! Example: SOL = $150 → ask_price = 150_000_000. Swapping
+    //! 1 SOL (1e9 lamports) base→quote yields 150_000_000 micro-USDC.
+    use super::*;
+    type TestResult = std::result::Result<u64, anchor_lang::error::Error>;
+
+    fn assert_err(res: TestResult, expected: ErrorCode) {
+        let e = res.expect_err("expected error");
+        assert!(
+            format!("{e:?}").contains(&format!("{expected:?}")),
+            "expected {expected:?}, got {e:?}"
+        );
+    }
+
+    // ----- compute_expected_amount_out -----
+
+    #[test]
+    fn base_to_quote_happy_path_sol_usdc() {
+        // 1 SOL (1e9 lamports) base→quote at ask_price = $150 →
+        //   out = 1e9 * 150_000_000 / 1e9 = 150_000_000 micro-USDC = $150.00
+        let out = compute_expected_amount_out(
+            0,
+            1_000_000_000,          // 1 SOL in lamports
+            149_625_000,            // bid  (unused for dir=0)
+            150_375_000,            // ask  ($150.375 per SOL)
+            83,                     // bid_size (unused)
+            10_000,                 // ask_size (10k SOL available)
+            9,                      // base_decimals = SOL
+        )
+        .unwrap();
+        assert_eq!(out, 150_375_000); // $150.375 in micro-USD
+    }
+
+    #[test]
+    fn quote_to_base_happy_path_sol_usdc() {
+        // 150 USDC (150e6 micro) quote→base at bid_price = $149.625 per SOL →
+        //   out = 150e6 * 1e9 / 149_625_000 ≈ 1.0025 SOL (integer-truncated)
+        let out = compute_expected_amount_out(
+            1,
+            150_000_000,            // 150 USDC in micro-USDC
+            149_625_000,            // bid $149.625
+            150_375_000,            // ask (unused)
+            100_000,                // bid_size (SOL we'd buy, plenty)
+            0,                      // ask_size (unused)
+            9,                      // base_decimals = SOL
+        )
+        .unwrap();
+        // Expected: 150_000_000 * 1_000_000_000 / 149_625_000 = 1_002_506_265
+        assert_eq!(out, 1_002_506_265);
+    }
+
+    #[test]
+    fn base_to_quote_exactly_at_size_cap_accepted() {
+        // amount_in == ask_size * base_scale should pass the cap.
+        let out = compute_expected_amount_out(
+            0,
+            10_000 * 1_000_000_000, // 10k SOL in lamports
+            0,
+            150_000_000,
+            0,
+            10_000,                  // cap = 10k SOL
+            9,
+        )
+        .unwrap();
+        // 10k SOL * $150 = $1.5M in micro-USDC
+        assert_eq!(out, 1_500_000_000_000);
+    }
+
+    #[test]
+    fn base_to_quote_over_size_cap_rejects() {
+        // amount_in > ask_size * base_scale
+        assert_err(
+            compute_expected_amount_out(
+                0,
+                10_001 * 1_000_000_000,
+                0,
+                150_000_000,
+                0,
+                10_000,
+                9,
+            ),
+            ErrorCode::SwapAmountExceedsMpcSize,
+        );
+    }
+
+    #[test]
+    fn quote_to_base_over_size_cap_rejects() {
+        // amount_in / bid_price > bid_size
+        // e.g. bid_size = 10 SOL at $150: max amount_in = 10 * 150 * 1e6 = 1.5e9
+        // Pass 2e9 → equivalent_base = 2e9 / 150e6 = 13 > 10
+        assert_err(
+            compute_expected_amount_out(
+                1,
+                2_000_000_000,           // 2000 USDC
+                150_000_000,             // bid $150
+                0,
+                10,                       // bid_size = 10 SOL
+                0,
+                9,
+            ),
+            ErrorCode::SwapAmountExceedsMpcSize,
+        );
+    }
+
+    #[test]
+    fn quote_to_base_with_zero_bid_rejects() {
+        // bid_price = 0 must reject (would div-by-zero otherwise).
+        assert_err(
+            compute_expected_amount_out(1, 100, 0, 150_000_000, 10, 10, 9),
+            ErrorCode::ZeroNavBasis,
+        );
+    }
+
+    #[test]
+    fn invalid_direction_rejects() {
+        assert_err(
+            compute_expected_amount_out(2, 100, 100, 100, 10, 10, 9),
+            ErrorCode::InvalidSwapDirection,
+        );
+        assert_err(
+            compute_expected_amount_out(255, 100, 100, 100, 10, 10, 9),
+            ErrorCode::InvalidSwapDirection,
+        );
+    }
+
+    #[test]
+    fn zero_amount_in_returns_zero_out() {
+        // Not an error at the math layer — the handler checks `amount_in > 0`
+        // before calling the helper. Pure-function answers honestly: out = 0.
+        let out = compute_expected_amount_out(0, 0, 0, 150_000_000, 0, 10, 9).unwrap();
+        assert_eq!(out, 0);
+    }
+
+    #[test]
+    fn extreme_base_decimals_scale_works() {
+        // 6-decimal base (USDC-style) swapping USDC→USDC-like.
+        // 1 USDC base * $1 ask / 1e6 = 1_000_000 quote-raw.
+        let out = compute_expected_amount_out(
+            0,
+            1_000_000,               // 1 unit in 6-dec raw
+            0,
+            1_000_000,               // $1 per unit
+            0,
+            1_000_000,               // plenty of cap
+            6,
+        )
+        .unwrap();
+        assert_eq!(out, 1_000_000);
+    }
+
+    #[test]
+    fn base_decimals_too_high_overflows() {
+        // base_decimals = 19 makes 10^19 > u64::MAX / 10 → fits in u128 but
+        // `amount_in * base_scale` would blow if amount_in is large too.
+        // With amount_in = 1 it shouldn't overflow (1 * 10^19 fits in u128).
+        let out = compute_expected_amount_out(1, 1, 100, 0, 1, 0, 19);
+        // 1 / 100 = 0 SOL equivalent_base → cap passes
+        // 1 * 10^19 / 100 = 10^17 ≤ u64::MAX → OK
+        assert_eq!(out.unwrap(), 100_000_000_000_000_000);
+    }
+
+    #[test]
+    fn base_decimals_above_39_overflows_10_pow() {
+        // 10^39 > u128::MAX — `checked_pow` returns None → MathOverflow.
+        assert_err(
+            compute_expected_amount_out(0, 1, 0, 1, 0, u64::MAX, 39),
+            ErrorCode::MathOverflow,
+        );
+    }
+
+    // ----- compute_safety_floor -----
+
+    #[test]
+    fn safety_floor_at_5_percent_cap() {
+        // $100 expected_out at 5% cap → floor = $95
+        let floor = compute_safety_floor(100_000_000, 500).unwrap();
+        assert_eq!(floor, 95_000_000);
+    }
+
+    #[test]
+    fn safety_floor_at_zero_bps_equals_expected() {
+        // 0% cap means the floor IS the expected — no slippage tolerated.
+        let floor = compute_safety_floor(100_000_000, 0).unwrap();
+        assert_eq!(floor, 100_000_000);
+    }
+
+    #[test]
+    fn safety_floor_at_100_percent_bps_is_zero() {
+        // 10_000 bps = 100% — floor collapses to 0. Valid arithmetically.
+        let floor = compute_safety_floor(100_000_000, 10_000).unwrap();
+        assert_eq!(floor, 0);
+    }
+
+    #[test]
+    fn safety_floor_rejects_over_100_percent_bps() {
+        // 10_001 bps would underflow 10_000 - bps → MathOverflow.
+        assert_err(
+            compute_safety_floor(100_000_000, 10_001),
+            ErrorCode::MathOverflow,
+        );
+    }
+
+    #[test]
+    fn safety_floor_zero_expected_out_is_zero_floor() {
+        // 0 * anything = 0. Pure function gives the honest answer.
+        let floor = compute_safety_floor(0, 500).unwrap();
+        assert_eq!(floor, 0);
+    }
+
+    #[test]
+    fn safety_floor_extreme_expected_out_no_overflow() {
+        // u64::MAX expected_out × u16 cap works because the u128
+        // intermediate is comfortable.
+        let floor = compute_safety_floor(u64::MAX, 500).unwrap();
+        // (2^64 - 1) * 9500 / 10_000 ≈ 0.95 * 2^64, fits in u64.
+        let expected = ((u64::MAX as u128) * 9500 / 10_000) as u64;
+        assert_eq!(floor, expected);
+    }
+
+    // ----- combined: integration of the two helpers -----
+
+    #[test]
+    fn handler_floor_matches_expected_times_safety_factor() {
+        // A full walkthrough: compute expected_out, then floor, and
+        // assert the relationship holds arithmetically.
+        let expected = compute_expected_amount_out(
+            0,
+            1_000_000_000,
+            0,
+            150_000_000,
+            0,
+            10_000,
+            9,
+        )
+        .unwrap();
+        let floor = compute_safety_floor(expected, 500).unwrap();
+        // expected = 150_000_000 micro-USDC; 5% cap → floor = 142_500_000
+        assert_eq!(expected, 150_000_000);
+        assert_eq!(floor, 142_500_000);
     }
 }
 
