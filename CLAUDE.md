@@ -30,11 +30,13 @@ source .env.local && arcium test --cluster devnet --skip-build
 
 ```
 lib.rs        # declare_id! + #[arcium_program] with thin handlers (rustdoc'd).
-              # Holds three handler-side helpers:
+              # Holds thin Anchor wrappers over shadowpool-math helpers:
               #   - enforce_mint_extension_allowlist (Token-2022 init-time check)
-              #   - read_pyth_price / validate_and_normalize_price (Pyth Pull
-              #     Oracle read + validation + exponent normalization)
-              #   - (execute_rebalance uses dlmm_cpi::swap internally)
+              #   - read_pyth_price (Pyth SDK staleness check + call into
+              #     shadowpool_math::validate_and_normalize_price)
+              #   - compute_expected_amount_out / compute_safety_floor
+              #     (translate shadowpool_math::MathError → ErrorCode)
+              #   - math_err_to_anchor translation (explicit 1:1 mapping)
 dlmm_cpi.rs   # Hand-rolled Meteora DLMM swap CPI. Narrower than
               # declare_program!(dlmm) (which fails to compile due to
               # DLMM's zero-copy account types); covers only the `swap`
@@ -58,6 +60,26 @@ contexts.rs   # 18 #[derive(Accounts)] structs. Every vault ref seed-bound
 idls/         # Vendored third-party IDLs for reproducibility.
               #   dlmm.json — Meteora DLMM v0.8.2 (from MeteoraAg/cpi-examples).
 ```
+
+### Pure-math crate — `crates/shadowpool-math/`
+
+no_std-compatible workspace crate that owns the audit-critical math:
+- `validate_and_normalize_price` — Pyth input sanitizer + normalizer.
+- `compute_expected_amount_out` — DLMM swap expected output + cap.
+- `compute_safety_floor` — MPC-anchored slippage floor.
+
+Returns `MathError` instead of Anchor's `Error`. The shadowpool
+program holds thin wrappers that translate `MathError → ErrorCode`
+via `math_err_to_anchor`. Fuzz-testable with `cargo-fuzz` (see
+`programs/shadowpool/fuzz/`); reusable by third-party integrators.
+
+### Fuzz harness — `programs/shadowpool/fuzz/`
+
+`cargo-fuzz` crate, `[workspace]` empty table keeps nightly/sanitizer
+flags from leaking into the Anchor build. Three targets — one per
+pure-math helper. Latest overnight run: 266M iterations, 0 crashes.
+Report in `fuzz/REPORT.md`. Corpus in `fuzz/corpus/` (gitignored via
+the scaffold's default `.gitignore`).
 
 ### Arcis circuits — `encrypted-ixs/src/lib.rs` (5 circuits + unit tests)
 
@@ -186,7 +208,7 @@ deposit / withdraw (SPL token flow)
 ### Shipped
 - **Program**: 20 instructions, modular src/ layout, `token_interface` migration done, rustdoc on every public instruction.
 - **Circuits**: 5 circuits, safe-divisor applied, u128 arithmetic hardening throughout.
-- **Tests**: **9 integration tests** (6 localnet-runnable + 3 Pyth-gated), all the localnet ones green in ~25s. **29 unit tests** (16 Arcis + 11 Pyth normalization + 1 offset invariant + 1 program ID) all green via `cargo test --workspace --lib` in ~3s.
+- **Tests**: **9 integration tests** (6 localnet-runnable + 3 Pyth-gated via `PYTH_TEST=1`), all the localnet ones green in ~25s. **73 unit tests** (16 Arcis + 37 shadowpool-lib + 20 shadowpool-math) all green via `cargo test --workspace --lib` in ~3s. Plus **cargo-fuzz** harness with 3 targets and 266M iterations without a crash in the latest run.
 - **Typed IDL end-to-end**: `Program<Shadowpool>` everywhere, `VaultData` derived from `IdlAccounts<Shadowpool>` — no `as any` casts in hooks.
 - **Security**: NAV-aware share pricing, staleness guard, uniform `cranker` gate across the MPC rebalance pipeline (compute_quotes / update_balances / execute_rebalance), `nav_basis > 0` guard in deposit/withdraw, seed binding on every vault context, `transfer_checked`, vault init hardening (no freeze / delegate / close authority, distinct mints, Token-2022 extension allow-list), **five-layer Pyth Pull Oracle validation** on `compute_quotes` (owner / feed_id x2 / staleness / positive+exponent+conf / u128 normalization).
 - **Devnet deployed**: program live at `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`. 3 of 5 comp defs initialized (last 2 pending — devnet flakiness). Post-Phase-0/1 the on-chain layout added `cranker`, `price_feed_id`, `max_price_age_seconds` fields; existing devnet vault accounts predate the new layout and need `arcium clean --only-accounts` + redeploy before devnet testing resumes.
