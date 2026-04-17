@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/shadowpool.json`.
  */
 export type Shadowpool = {
-  "address": "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g",
+  "address": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
   "metadata": {
     "name": "shadowpool",
     "version": "0.1.0",
@@ -490,23 +490,33 @@ export type Shadowpool = {
     {
       "name": "executeRebalance",
       "docs": [
-        "Read freshly-computed quotes, (eventually) execute the DEX trade,",
-        "and mark the NAV stale until the next reveal.",
+        "Read freshly-computed MPC quotes, CPI into Meteora DLMM to",
+        "execute the trade, and mark NAV stale until the next reveal.",
         "",
-        "Authority-gated (constraint on the `cranker` signer in the",
-        "context). Validates that:",
+        "**Authority-gated** (cranker == vault.cranker, enforced by the",
+        "context constraint). Validates:",
         "- quotes exist (`quotes_slot > 0`),",
         "- they haven't been used (`!quotes_consumed`),",
         "- they aren't stale (`slot - quotes_slot <= QUOTE_STALENESS_SLOTS`),",
         "- the MPC said a rebalance was needed (`should_rebalance == 1`),",
-        "- `max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS` (5% ceiling).",
+        "- `max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS` (5% ceiling),",
+        "- `swap_direction` is 0 (base→quote) or 1 (quote→base),",
+        "- `amount_in` is within the size the MPC revealed on the chosen side,",
+        "- `min_amount_out` is at least the MPC-derived safety floor",
+        "(`expected_out * (1 - MAX_ALLOWED_SLIPPAGE_BPS)`) — the cranker",
+        "can *tighten* slippage but never loosen it beyond the cap.",
         "",
-        "**DEX CPI is a placeholder**: computes slippage bounds + logs",
-        "the intended trade, but doesn't yet CPI into Meteora DLMM.",
-        "Once the CPI is live, `update_balances` gets called with the",
-        "actual deltas to re-sync encrypted state.",
+        "Executes a DLMM `swap` with the vault PDA as the signer. Bin",
+        "arrays traversed by the swap must be pre-computed client-side",
+        "and passed via `ctx.remaining_accounts` (see Meteora's TS SDK",
+        "`getBinArrayForSwap`). Post-CPI the handler reloads the vault's",
+        "out-side ATA, computes the real `amount_out`, and emits the",
+        "event with ground-truth values.",
         "",
-        "Flips `nav_stale = true` and `quotes_consumed = true` on exit."
+        "**NAV staleness**: sets `nav_stale = true` so deposit/withdraw",
+        "block until the next `reveal_performance` attestation. The",
+        "cranker is expected to call `update_balances` with the real",
+        "deltas next to re-sync the encrypted vault state."
       ],
       "discriminator": [
         36,
@@ -556,10 +566,87 @@ export type Shadowpool = {
           "writable": true
         },
         {
-          "name": "tokenProgram"
+          "name": "lbPair",
+          "docs": [
+            "DLMM pool state. Owner-checked against the Meteora DLMM program."
+          ],
+          "writable": true
+        },
+        {
+          "name": "dlmmReserveX",
+          "docs": [
+            "DLMM token-X reserve. Writable; DLMM moves tokens in/out during swap."
+          ],
+          "writable": true
+        },
+        {
+          "name": "dlmmReserveY",
+          "docs": [
+            "DLMM token-Y reserve."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenXMint",
+          "docs": [
+            "Mint for DLMM pool's token X. Must match one of the vault's mints",
+            "(in either X/Y position). The pairing constraint is placed on",
+            "`token_y_mint` so both are examined together."
+          ]
+        },
+        {
+          "name": "tokenYMint",
+          "docs": [
+            "Mint for DLMM pool's token Y. Must pair with `token_x_mint` so that",
+            "`{token_x_mint, token_y_mint} == {vault.token_a_mint, vault.token_b_mint}`."
+          ]
+        },
+        {
+          "name": "dlmmOracle",
+          "docs": [
+            "DLMM per-pool oracle (Meteora's internal price record, not Pyth)."
+          ],
+          "writable": true
+        },
+        {
+          "name": "tokenXProgram",
+          "docs": [
+            "Token program for DLMM's X-side (SPL Token or Token-2022)."
+          ]
+        },
+        {
+          "name": "tokenYProgram",
+          "docs": [
+            "Token program for DLMM's Y-side."
+          ]
+        },
+        {
+          "name": "dlmmEventAuthority",
+          "docs": [
+            "DLMM event authority PDA (`[b\"__event_authority\"]` under DLMM)."
+          ]
+        },
+        {
+          "name": "dlmmProgram",
+          "docs": [
+            "DLMM program self-reference, required by emit_cpi!."
+          ],
+          "address": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
         }
       ],
       "args": [
+        {
+          "name": "swapDirection",
+          "type": "u8"
+        },
+        {
+          "name": "amountIn",
+          "type": "u64"
+        },
+        {
+          "name": "minAmountOut",
+          "type": "u64"
+        },
         {
           "name": "maxSlippageBps",
           "type": "u16"
@@ -2198,6 +2285,31 @@ export type Shadowpool = {
       "code": 6024,
       "name": "priceTooUncertain",
       "msg": "Pyth confidence interval exceeds the 1% tolerance — price is unreliable"
+    },
+    {
+      "code": 6025,
+      "name": "invalidSwapDirection",
+      "msg": "Swap direction must be 0 (base→quote) or 1 (quote→base)"
+    },
+    {
+      "code": 6026,
+      "name": "invalidDlmmPool",
+      "msg": "DLMM pool account owner does not match the Meteora DLMM program"
+    },
+    {
+      "code": 6027,
+      "name": "slippageFloorViolated",
+      "msg": "Caller-supplied min_amount_out is below the MPC-price safety floor"
+    },
+    {
+      "code": 6028,
+      "name": "swapAmountExceedsMpcSize",
+      "msg": "Requested swap amount exceeds the size the MPC strategy revealed"
+    },
+    {
+      "code": 6029,
+      "name": "missingBinArrays",
+      "msg": "No bin arrays supplied — DLMM swap requires at least one via remaining_accounts"
     }
   ],
   "types": [

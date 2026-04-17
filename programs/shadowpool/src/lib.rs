@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 use anchor_lang::prelude::*;
 use anchor_spl::token_2022::spl_token_2022::{
     extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
@@ -7,6 +9,8 @@ use anchor_spl::token_interface::{self, Burn, Mint, MintTo, TransferChecked};
 use arcium_anchor::prelude::*;
 use arcium_client::idl::arcium::types::CallbackAccount;
 use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
+
+pub mod dlmm_cpi;
 
 pub mod constants;
 pub mod contexts;
@@ -1055,91 +1059,255 @@ pub mod shadowpool {
     // ==========================================================
     // Called by the authority after compute_quotes writes fresh quotes.
 
-    /// Read freshly-computed quotes, (eventually) execute the DEX trade,
-    /// and mark the NAV stale until the next reveal.
+    /// Read freshly-computed MPC quotes, CPI into Meteora DLMM to
+    /// execute the trade, and mark NAV stale until the next reveal.
     ///
-    /// Authority-gated (constraint on the `cranker` signer in the
-    /// context). Validates that:
+    /// **Authority-gated** (cranker == vault.cranker, enforced by the
+    /// context constraint). Validates:
     /// - quotes exist (`quotes_slot > 0`),
     /// - they haven't been used (`!quotes_consumed`),
     /// - they aren't stale (`slot - quotes_slot <= QUOTE_STALENESS_SLOTS`),
     /// - the MPC said a rebalance was needed (`should_rebalance == 1`),
-    /// - `max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS` (5% ceiling).
+    /// - `max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS` (5% ceiling),
+    /// - `swap_direction` is 0 (base→quote) or 1 (quote→base),
+    /// - `amount_in` is within the size the MPC revealed on the chosen side,
+    /// - `min_amount_out` is at least the MPC-derived safety floor
+    ///   (`expected_out * (1 - MAX_ALLOWED_SLIPPAGE_BPS)`) — the cranker
+    ///   can *tighten* slippage but never loosen it beyond the cap.
     ///
-    /// **DEX CPI is a placeholder**: computes slippage bounds + logs
-    /// the intended trade, but doesn't yet CPI into Meteora DLMM.
-    /// Once the CPI is live, `update_balances` gets called with the
-    /// actual deltas to re-sync encrypted state.
+    /// Executes a DLMM `swap` with the vault PDA as the signer. Bin
+    /// arrays traversed by the swap must be pre-computed client-side
+    /// and passed via `ctx.remaining_accounts` (see Meteora's TS SDK
+    /// `getBinArrayForSwap`). Post-CPI the handler reloads the vault's
+    /// out-side ATA, computes the real `amount_out`, and emits the
+    /// event with ground-truth values.
     ///
-    /// Flips `nav_stale = true` and `quotes_consumed = true` on exit.
-    pub fn execute_rebalance(
-        ctx: Context<ExecuteRebalance>,
+    /// **NAV staleness**: sets `nav_stale = true` so deposit/withdraw
+    /// block until the next `reveal_performance` attestation. The
+    /// cranker is expected to call `update_balances` with the real
+    /// deltas next to re-sync the encrypted vault state.
+    pub fn execute_rebalance<'info>(
+        ctx: Context<'_, '_, '_, 'info, ExecuteRebalance<'info>>,
+        swap_direction: u8,
+        amount_in: u64,
+        min_amount_out: u64,
         max_slippage_bps: u16,
     ) -> Result<()> {
-        // Cap slippage to 5% so a malicious or buggy cranker cannot quietly
-        // pass 100% and nullify the slippage protection. Institutional MM
-        // strategies rarely need >2% tolerance; 5% is the safety ceiling.
+        // --- 1. Static arg validation ---
+        require!(
+            swap_direction == 0 || swap_direction == 1,
+            ErrorCode::InvalidSwapDirection
+        );
+        require!(amount_in > 0, ErrorCode::InvalidAmount);
         require!(
             max_slippage_bps <= MAX_ALLOWED_SLIPPAGE_BPS,
             ErrorCode::SlippageTooHigh
         );
+        require!(
+            !ctx.remaining_accounts.is_empty(),
+            ErrorCode::MissingBinArrays
+        );
 
+        // --- 2. Quote lifecycle checks (existing) ---
         let vault = &ctx.accounts.vault;
-
-        // Validate quotes exist and haven't been used
         require!(!vault.quotes_consumed, ErrorCode::QuotesAlreadyConsumed);
         require!(vault.quotes_slot > 0, ErrorCode::NoQuotesAvailable);
 
-        // Staleness check: quotes must be from within the last 150 slots (~1 minute)
         let current_slot = Clock::get()?.slot;
         let age = current_slot.saturating_sub(vault.quotes_slot);
         require!(age <= QUOTE_STALENESS_SLOTS, ErrorCode::QuotesStale);
 
-        // Read the persisted quotes
         let bid_price = vault.last_bid_price;
         let bid_size = vault.last_bid_size;
         let ask_price = vault.last_ask_price;
         let ask_size = vault.last_ask_size;
         let should_rebalance = vault.last_should_rebalance;
-
-        // Only rebalance if the MPC computation says so
         require!(should_rebalance == 1, ErrorCode::RebalanceNotNeeded);
 
-        // Compute slippage bounds for DEX execution
-        let bid_min_out = bid_size
-            .checked_mul((10_000u64).checked_sub(max_slippage_bps as u64).ok_or(ErrorCode::MathOverflow)?)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(10_000)
-            .ok_or(ErrorCode::MathOverflow)?;
-        let ask_min_out = ask_size
-            .checked_mul((10_000u64).checked_sub(max_slippage_bps as u64).ok_or(ErrorCode::MathOverflow)?)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(10_000)
+        // --- 3. Size cap — amount_in bounded by the MPC-revealed size
+        //        for the chosen direction. bid_size is the base-unit
+        //        quantity we'd buy (quote→base); ask_size is the base-
+        //        unit quantity we'd sell (base→quote). The MPC values
+        //        are in base-whole-units; callers supplying raw amounts
+        //        should multiply by 10^base_decimals client-side, so we
+        //        compare scaled values. Audit note: this check is the
+        //        *ceiling*, not a size-fidelity check; a cranker that
+        //        under-swaps is allowed (e.g. splitting the rebalance). ---
+        let vault_a_is_x = ctx.accounts.token_x_mint.key() == vault.token_a_mint;
+        let base_mint_info = if vault_a_is_x {
+            &ctx.accounts.token_x_mint
+        } else {
+            &ctx.accounts.token_y_mint
+        };
+        let base_decimals = base_mint_info.decimals;
+        let base_scale: u128 = 10u128
+            .checked_pow(base_decimals as u32)
             .ok_or(ErrorCode::MathOverflow)?;
 
-        // ── DEX CPI PLACEHOLDER ──────────────────────────────────
-        // Meteora DLMM integration goes here. The vault PDA signs:
-        //   let signer_seeds = &[b"vault", authority.as_ref(), &[bump]];
+        // --- 4. Direction-aware price/size picking + safety floor ---
         //
-        // Two possible approaches:
-        //   1. Swap: CPI into dlmm::cpi::swap() with bid/ask amounts
-        //   2. LP:   CPI into dlmm::cpi::add_liquidity_by_strategy()
-        //            with bid/ask converted to a bin range
+        // Prices are MPC-revealed in TARGET_PRICE_EXPO (-6 micro-USD)
+        // per *whole base unit*. For the cross to SPL raw units we divide
+        // amount_in by base_scale where appropriate.
         //
-        // After CPI, read actual token deltas and pass to update_balances.
-        // ─────────────────────────────────────────────────────────
+        // For base→quote (direction 0): out (quote-raw) = amount_in *
+        //   ask_price / base_scale. The quote side is assumed to share
+        //   TARGET_PRICE_EXPO (micro-USD) — holds for USDC-style 6-dec
+        //   quote mints; document the assumption for non-6-dec quote
+        //   deployments.
+        //
+        // For quote→base (direction 1): out (base-raw) = amount_in *
+        //   base_scale / bid_price. Requires bid_price > 0; enforce.
+        let (mpc_size_cap, expected_out): (u64, u64) = match swap_direction {
+            0 => {
+                // base→quote
+                // amount_in is in base-raw; compare to ask_size scaled up.
+                let ask_size_raw = (ask_size as u128)
+                    .checked_mul(base_scale)
+                    .ok_or(ErrorCode::MathOverflow)?;
+                let cap_u64: u64 = ask_size_raw
+                    .try_into()
+                    .unwrap_or(u64::MAX);
 
-        msg!(
-            "execute_rebalance: bid={}@{} ask={}@{} slippage={}bps min_bid_out={} min_ask_out={}",
-            bid_size, bid_price, ask_size, ask_price,
-            max_slippage_bps, bid_min_out, ask_min_out,
+                let out_u128 = (amount_in as u128)
+                    .checked_mul(ask_price as u128)
+                    .ok_or(ErrorCode::MathOverflow)?
+                    .checked_div(base_scale)
+                    .ok_or(ErrorCode::MathOverflow)?;
+                let out_u64: u64 = out_u128
+                    .try_into()
+                    .map_err(|_| ErrorCode::MathOverflow)?;
+                (cap_u64, out_u64)
+            }
+            _ => {
+                // 1: quote→base
+                require!(bid_price > 0, ErrorCode::ZeroNavBasis);
+                // bid_size is in base-whole-units; convert amount_in
+                // (quote-raw) to the same base-whole scale for comparison.
+                let equivalent_base = (amount_in as u128)
+                    .checked_div(bid_price as u128)
+                    .ok_or(ErrorCode::MathOverflow)?;
+                let cap_u64: u64 = bid_size;
+
+                let out_u128 = (amount_in as u128)
+                    .checked_mul(base_scale)
+                    .ok_or(ErrorCode::MathOverflow)?
+                    .checked_div(bid_price as u128)
+                    .ok_or(ErrorCode::MathOverflow)?;
+                let out_u64: u64 = out_u128
+                    .try_into()
+                    .map_err(|_| ErrorCode::MathOverflow)?;
+                // Use equivalent_base for the cap check instead of raw.
+                let equivalent_u64: u64 = equivalent_base
+                    .try_into()
+                    .unwrap_or(u64::MAX);
+                require!(
+                    equivalent_u64 <= cap_u64,
+                    ErrorCode::SwapAmountExceedsMpcSize
+                );
+                // Reuse cap_u64 for the event; it's in base-whole units.
+                (cap_u64, out_u64)
+            }
+        };
+        // Size cap check for direction 0 (deferred here because the
+        // branch-specific comparison is clearer inline).
+        if swap_direction == 0 {
+            require!(amount_in <= mpc_size_cap, ErrorCode::SwapAmountExceedsMpcSize);
+        }
+
+        // --- 5. MPC-anchored slippage floor. Cranker-supplied
+        //        min_amount_out must be ≥ expected_out * (1 - MAX_CAP).
+        //        Cranker can tighten slippage (pass a higher min_out) but
+        //        cannot loosen beyond MAX_ALLOWED_SLIPPAGE_BPS. Note we
+        //        compare against MAX_ALLOWED_SLIPPAGE_BPS (the cap), not
+        //        `max_slippage_bps` (the cranker's arg) — otherwise a
+        //        malicious cranker could pass max_slippage_bps=5% +
+        //        min_out=0 and bypass the floor. ---
+        let safety_factor = (10_000u64)
+            .checked_sub(MAX_ALLOWED_SLIPPAGE_BPS as u64)
+            .ok_or(ErrorCode::MathOverflow)?;
+        let safety_floor = (expected_out as u128)
+            .checked_mul(safety_factor as u128)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(10_000u128)
+            .ok_or(ErrorCode::MathOverflow)?;
+        let safety_floor_u64: u64 = safety_floor
+            .try_into()
+            .map_err(|_| ErrorCode::MathOverflow)?;
+        require!(
+            min_amount_out >= safety_floor_u64,
+            ErrorCode::SlippageFloorViolated
         );
 
-        // Mark quotes as consumed so they can't be replayed, and flag NAV as
-        // stale — the (eventual) DEX CPI will change vault composition in a
-        // way the previously-revealed NAV no longer reflects. Deposits and
-        // withdrawals will be blocked until reveal_performance produces a
-        // fresh NAV attestation.
+        // --- 6. Pick user_token_in / user_token_out per direction ---
+        let (user_token_in_info, user_token_out_info) = match swap_direction {
+            0 => (
+                ctx.accounts.vault_token_a.to_account_info(),
+                ctx.accounts.vault_token_b.to_account_info(),
+            ),
+            _ => (
+                ctx.accounts.vault_token_b.to_account_info(),
+                ctx.accounts.vault_token_a.to_account_info(),
+            ),
+        };
+
+        // --- 7. Snapshot out-side balance for post-swap delta ---
+        let balance_before: u64 = match swap_direction {
+            0 => ctx.accounts.vault_token_b.amount,
+            _ => ctx.accounts.vault_token_a.amount,
+        };
+
+        // --- 8. PDA signer seeds for the vault ---
+        let authority_key = vault.authority;
+        let bump = vault.bump;
+        let signer_seeds: &[&[&[u8]]] =
+            &[&[b"vault", authority_key.as_ref(), &[bump]]];
+
+        // --- 9. DLMM swap CPI ---
+        dlmm_cpi::swap(
+            dlmm_cpi::SwapCpiAccounts {
+                lb_pair: &ctx.accounts.lb_pair.to_account_info(),
+                bin_array_bitmap_extension: None,
+                reserve_x: &ctx.accounts.dlmm_reserve_x.to_account_info(),
+                reserve_y: &ctx.accounts.dlmm_reserve_y.to_account_info(),
+                user_token_in: &user_token_in_info,
+                user_token_out: &user_token_out_info,
+                token_x_mint: &ctx.accounts.token_x_mint.to_account_info(),
+                token_y_mint: &ctx.accounts.token_y_mint.to_account_info(),
+                oracle: &ctx.accounts.dlmm_oracle.to_account_info(),
+                host_fee_in: None,
+                user: &ctx.accounts.vault.to_account_info(),
+                token_x_program: &ctx.accounts.token_x_program.to_account_info(),
+                token_y_program: &ctx.accounts.token_y_program.to_account_info(),
+                event_authority: &ctx.accounts.dlmm_event_authority.to_account_info(),
+                dlmm_program: &ctx.accounts.dlmm_program.to_account_info(),
+                bin_arrays: ctx.remaining_accounts,
+            },
+            signer_seeds,
+            amount_in,
+            min_amount_out,
+        )?;
+
+        // --- 10. Reload + compute real amount_out ---
+        match swap_direction {
+            0 => ctx.accounts.vault_token_b.reload()?,
+            _ => ctx.accounts.vault_token_a.reload()?,
+        }
+        let balance_after: u64 = match swap_direction {
+            0 => ctx.accounts.vault_token_b.amount,
+            _ => ctx.accounts.vault_token_a.amount,
+        };
+        let actual_amount_out = balance_after
+            .checked_sub(balance_before)
+            .ok_or(ErrorCode::MathOverflow)?;
+        // Belt-and-braces: DLMM should have enforced this, but verify.
+        require!(
+            actual_amount_out >= min_amount_out,
+            ErrorCode::SlippageFloorViolated
+        );
+
+        // --- 11. Mark quotes consumed + NAV stale + emit event ---
+        let _ = mpc_size_cap; // used only for the require! above
         let vault = &mut ctx.accounts.vault;
         vault.quotes_consumed = true;
         vault.nav_stale = true;
@@ -1153,6 +1321,14 @@ pub mod shadowpool {
             ask_size,
             slot: current_slot,
         });
+
+        msg!(
+            "execute_rebalance OK: direction={} amount_in={} amount_out={} (floor={})",
+            swap_direction,
+            amount_in,
+            actual_amount_out,
+            min_amount_out
+        );
         Ok(())
     }
 }

@@ -76,4 +76,16 @@ pub enum ErrorCode {
     InvalidPriceExponent,
     #[msg("Pyth confidence interval exceeds the 1% tolerance — price is unreliable")]
     PriceTooUncertain,
+
+    // --- Meteora DLMM swap validation ---
+    #[msg("Swap direction must be 0 (base→quote) or 1 (quote→base)")]
+    InvalidSwapDirection,
+    #[msg("DLMM pool account owner does not match the Meteora DLMM program")]
+    InvalidDlmmPool,
+    #[msg("Caller-supplied min_amount_out is below the MPC-price safety floor")]
+    SlippageFloorViolated,
+    #[msg("Requested swap amount exceeds the size the MPC strategy revealed")]
+    SwapAmountExceedsMpcSize,
+    #[msg("No bin arrays supplied — DLMM swap requires at least one via remaining_accounts")]
+    MissingBinArrays,
 }
