@@ -29,6 +29,25 @@ export const metadata: Metadata = {
   title: "ShadowPool — Confidential Execution Layer for Solana",
   description:
     "The dark-pool execution layer for Solana. Encrypted strategy, public execution, selective disclosure for auditors. Built on Arcium MPC.",
+  // `opengraph-image.tsx` + `twitter-image.tsx` are picked up
+  // automatically by Next 16 at the app/ root. Explicit metadata
+  // below ensures the `og:` / `twitter:` fields are populated even
+  // if the image files are temporarily absent during CI runs.
+  openGraph: {
+    title: "ShadowPool — Confidential Execution Layer for Solana",
+    description:
+      "Dark-pool execution for Solana. Strategy lives inside Arcium's MPC cluster; only quotes reach the chain.",
+    type: "website",
+    locale: "en_US",
+    siteName: "ShadowPool",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "ShadowPool — Confidential Execution Layer for Solana",
+    description:
+      "Dark-pool execution for Solana. Strategy lives inside Arcium's MPC cluster; only quotes reach the chain.",
+    creator: "@criptocbas",
+  },
 };
 
 export default function RootLayout({

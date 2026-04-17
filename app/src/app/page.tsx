@@ -8,6 +8,7 @@ import { MarketData } from "@/components/landing/MarketData";
 import { MevSavingsCounter } from "@/components/landing/MevSavingsCounter";
 import { ProtocolFlow } from "@/components/landing/ProtocolFlow";
 import { PersonaRows } from "@/components/landing/PersonaRows";
+import { PartnersRows } from "@/components/landing/PartnersRows";
 import { VerifiedFooter } from "@/components/landing/VerifiedFooter";
 
 // ─── Main Landing ───────────────────────────────────────────────────────
@@ -316,7 +317,7 @@ export default function LandingPage() {
               className="text-[10px] font-mono tracking-[0.25em] uppercase mb-2"
               style={{ color: "var(--text-tertiary)" }}
             >
-              · 02 · Who this is for
+              · 02b · Who this is for
             </div>
             <h2
               className="font-editorial text-[clamp(1.75rem,3.5vw,2.5rem)] leading-tight max-w-4xl"
@@ -327,6 +328,44 @@ export default function LandingPage() {
           </div>
 
           <PersonaRows />
+        </section>
+
+        {/* ═══ Partners / built-with ═══ */}
+        <section
+          className="px-6 md:px-10 lg:px-16 py-20"
+          style={{ borderBottom: "1px solid var(--border-subtle)" }}
+        >
+          <div className="mb-10">
+            <div
+              className="text-[10px] font-mono tracking-[0.25em] uppercase mb-2"
+              style={{ color: "var(--text-tertiary)" }}
+            >
+              · 03 · Infrastructure partners
+            </div>
+            <h2
+              className="font-editorial text-[clamp(1.75rem,3.5vw,2.5rem)] leading-tight max-w-4xl"
+              style={{ color: "var(--text-editorial)" }}
+            >
+              Built on top of infrastructure that already works —
+              <span
+                className="font-editorial-italic"
+                style={{ color: "var(--accent-encrypted)" }}
+              >
+                {" "}named, sourced, verifiable
+              </span>
+              .
+            </h2>
+            <p
+              className="mt-3 text-[14px] leading-relaxed max-w-2xl"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              Every partner ships production infrastructure ShadowPool
+              depends on. Their addresses and integration points are
+              inline; click through to verify.
+            </p>
+          </div>
+
+          <PartnersRows />
         </section>
 
         {/* ═══ Closer ═══ */}
@@ -343,7 +382,7 @@ export default function LandingPage() {
               className="text-[10px] font-mono tracking-[0.25em] uppercase mb-5"
               style={{ color: "var(--text-tertiary)" }}
             >
-              · 03 · Close
+              · 04 · Close
             </div>
 
             <blockquote className="editorial-quote text-[clamp(2rem,5vw,3.75rem)]">
