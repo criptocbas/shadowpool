@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ShadowPool — frontend
 
-## Getting Started
+Next.js 16 + React 19 + Tailwind v4 app that ships the public landing
+and the vault dashboard.
 
-First, run the development server:
+## Local development
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+yarn install
+cp .env.example .env.local   # fill in NEXT_PUBLIC_RPC_URL
+yarn dev                     # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Routes:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `/` — landing (editorial hero + protocol flow + market data)
+- `/vault` — dashboard (create vault → initialize strategy → actions)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Build & verify
 
-## Learn More
+```bash
+yarn tsc --noEmit            # type-check (~2s)
+yarn build                   # production build (~20s with Turbopack)
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Deploying to Vercel
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The repository ships a root-level [`vercel.json`](../vercel.json) that
+points Vercel at the `app/` sub-directory (monorepo-style layout —
+the outer workspace also holds the Anchor program, Arcis circuits,
+and the `shadowpool-math` crate).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+**One-shot deploy from the repo root:**
 
-## Deploy on Vercel
+```bash
+# First-time setup (from repo root — the one with vercel.json)
+vercel link
+# When prompted for "Root Directory", accept the default (".") —
+# vercel.json's buildCommand handles the cd into app/.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# Environment variables: either set via dashboard (Project → Settings
+# → Environment Variables) or import from .env.local:
+vercel env pull
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+# Deploy
+vercel --prod
+```
+
+**Environment variables to configure in the Vercel dashboard:**
+
+See [`.env.example`](.env.example) for the current list. The
+critical one is `NEXT_PUBLIC_RPC_URL` — set this to a **paid Helius
+devnet endpoint** (the free tier drops Arcium uploads under load).
+
+**DNS:** after the initial deploy, attach your custom domain in
+Vercel → Domains. No extra config needed on the app side.
+
+## Design system
+
+The UI uses an institutional-ops aesthetic (Bloomberg terminal /
+Palantir mission-control) rather than the standard web3 template.
+Three-channel typography: Geist Sans (body), Geist Mono (data),
+Instrument Serif (editorial). Everything else — color tokens in
+OKLCH, motif classes like `.hex-dump`, `.flow-rail`, `.ticker-track`,
+`.stream-log`, `.hero-terminal` — is in
+[`src/app/globals.css`](src/app/globals.css).
+
+See the root [`README.md`](../README.md) for the overall project
+architecture and the [whitepaper](../WHITEPAPER.md) for the protocol
+design.
