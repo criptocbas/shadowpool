@@ -1,51 +1,62 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { PublicKey } from "@solana/web3.js";
+import { useProgramEvents } from "@/hooks/useProgramEvents";
 
 /**
- * Rolling "live activity" panel for the vault dashboard sidebar.
+ * Live program-event stream — one line per on-chain event emitted
+ * by the ShadowPool program for the connected wallet's vault.
  *
- * Styled like a program log (stream-log CSS motif we already use in
- * the landing hero) — slot-stamped, colour-tagged events that evoke a
- * running program trace rather than a cartoon notification feed.
+ * Subscribes via Anchor's `program.addEventListener` at mount, keeps
+ * a 24-entry ring buffer newest-first, and formats each event's
+ * payload into a log line with a slot prefix and a level-colored
+ * body (enc / rev / warn / default).
  *
- * Currently populates from a deterministic rotating set until the
- * real event-log subscription lands (Phase 2 work). The rotation is
- * driven by a client-only tick so the server-side render is stable.
+ * When no vault is connected, falls back to a deterministic sample
+ * trace so the demo-mode visitor sees the styling and understands
+ * what the stream represents.
  */
-interface StreamEvent {
+interface FallbackEvent {
   slot: number;
   level: "enc" | "rev" | "warn" | "default";
   text: string;
 }
 
-const SAMPLE_EVENTS: Array<Omit<StreamEvent, "slot">> = [
+const FALLBACK_EVENTS: Array<Omit<FallbackEvent, "slot">> = [
   { level: "enc", text: "compute_quotes · queued · cranker=B6Mt…zPt7" },
   { level: "default", text: "pyth PriceUpdateV2 · feed=ef0d…b56d · age=2s" },
   { level: "rev", text: "QuotesComputedEvent · bid $149.625 · ask $150.375" },
   { level: "default", text: "execute_rebalance · DLMM swap · min_out=9.97" },
   { level: "enc", text: "update_balances · nonce→4137 · state rewritten" },
   { level: "rev", text: "PerformanceRevealedEvent · NAV $1_500_112.84" },
-  { level: "warn", text: "QuotesOverwrittenEvent · previous quote dropped" },
 ];
 
-export function ActivityStream({ baseSlot = 291_483_912 }: { baseSlot?: number }) {
-  const [slot, setSlot] = useState(baseSlot);
-  const [rotation, setRotation] = useState(0);
+export function ActivityStream({
+  vaultKey = null,
+  baseSlot = 291_483_912,
+}: {
+  vaultKey?: PublicKey | null;
+  baseSlot?: number;
+}) {
+  const events = useProgramEvents(vaultKey, 24);
 
+  // Slot ticker for the sample trace fallback. Real-event mode reads
+  // slot numbers directly from the events themselves.
+  const [sampleSlot, setSampleSlot] = useState(baseSlot);
+  const [rotation, setRotation] = useState(0);
   useEffect(() => {
-    const a = setInterval(() => setSlot((s) => s + 1), 420);
+    if (vaultKey) return; // real-event mode handles its own slots
+    const a = setInterval(() => setSampleSlot((s) => s + 1), 420);
     const b = setInterval(() => setRotation((r) => r + 1), 3000);
     return () => {
       clearInterval(a);
       clearInterval(b);
     };
-  }, []);
+  }, [vaultKey]);
 
-  const entries: StreamEvent[] = SAMPLE_EVENTS.map((e, i) => ({
-    ...e,
-    slot: slot - (i + (rotation % SAMPLE_EVENTS.length)) * 7,
-  })).slice(0, 6);
+  const hasLiveEvents = events.length > 0;
+  const isLive = vaultKey !== null;
 
   return (
     <div>
@@ -55,7 +66,11 @@ export function ActivityStream({ baseSlot = 291_483_912 }: { baseSlot?: number }
       >
         <span
           className="w-1.5 h-1.5 rounded-full live-dot"
-          style={{ background: "var(--accent-encrypted)" }}
+          style={{
+            background: isLive
+              ? "var(--accent-revealed)"
+              : "var(--accent-encrypted)",
+          }}
         />
         Activity
         <span className="flex-1" />
@@ -63,7 +78,11 @@ export function ActivityStream({ baseSlot = 291_483_912 }: { baseSlot?: number }
           className="text-[9px] font-mono normal-case tracking-normal"
           style={{ color: "var(--text-tertiary)", opacity: 0.7 }}
         >
-          devnet
+          {isLive
+            ? hasLiveEvents
+              ? `${events.length} event${events.length === 1 ? "" : "s"}`
+              : "listening…"
+            : "demo · sample"}
         </span>
       </div>
 
@@ -74,22 +93,61 @@ export function ActivityStream({ baseSlot = 291_483_912 }: { baseSlot?: number }
           border: "1px solid var(--border-subtle)",
         }}
       >
-        {entries.map((e, i) => (
-          <div key={`${slot}-${i}`} className="stream-log-entry">
-            <span className="stream-log-slot">{e.slot.toLocaleString()} ·</span>
-            <span className="stream-log-event" data-level={e.level}>
-              {e.text}
-            </span>
+        {isLive && !hasLiveEvents && (
+          <div
+            className="text-[10.5px] font-mono leading-relaxed italic"
+            style={{ color: "var(--text-tertiary)", opacity: 0.7 }}
+          >
+            listening for program events · try running Compute quotes or
+            Reveal performance from the actions panel
           </div>
-        ))}
+        )}
+
+        {isLive && hasLiveEvents &&
+          events.map((e) => (
+            <div key={e.key} className="stream-log-entry">
+              <span className="stream-log-slot">
+                {e.slot.toString()} ·
+              </span>
+              <span className="stream-log-event" data-level={e.level}>
+                {e.text}
+              </span>
+            </div>
+          ))}
+
+        {!isLive &&
+          buildSampleEntries(sampleSlot, rotation).map((e, i) => (
+            <div key={`${sampleSlot}-${i}`} className="stream-log-entry">
+              <span className="stream-log-slot">{e.slot.toLocaleString()} ·</span>
+              <span className="stream-log-event" data-level={e.level}>
+                {e.text}
+              </span>
+            </div>
+          ))}
       </div>
 
       <p
         className="mt-2 text-[10px] leading-relaxed font-mono"
         style={{ color: "var(--text-tertiary)", opacity: 0.6 }}
       >
-        sample trace · live event subscription lands in Phase 2
+        {isLive
+          ? "live · program.addEventListener across 13 events"
+          : "sample trace · connect a wallet to stream your vault's events"}
       </p>
     </div>
   );
+}
+
+function buildSampleEntries(
+  slot: number,
+  rotation: number,
+): FallbackEvent[] {
+  const rotated = [
+    ...FALLBACK_EVENTS.slice(rotation % FALLBACK_EVENTS.length),
+    ...FALLBACK_EVENTS.slice(0, rotation % FALLBACK_EVENTS.length),
+  ];
+  return rotated.slice(0, 6).map((e, i) => ({
+    ...e,
+    slot: slot - i * 7,
+  }));
 }

@@ -12,3 +12,5 @@ export type { QuotesComputedPayload } from "./useComputeQuotesMpc";
 export { useUpdateStrategy } from "./useUpdateStrategy";
 export { useRevealPerformance } from "./useRevealPerformance";
 export type { PerformanceRevealedPayload } from "./useRevealPerformance";
+export { useProgramEvents } from "./useProgramEvents";
+export type { ProgramEventRecord } from "./useProgramEvents";

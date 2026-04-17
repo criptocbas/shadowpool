@@ -826,9 +826,14 @@ export default function VaultDashboard() {
               </div>
             )}
 
-            {/* Live activity — program log aesthetic */}
+            {/* Live activity — real program events when a vault is
+                connected; sample trace otherwise. */}
             <div className="mt-6">
-              <ActivityStream />
+              <ActivityStream
+                vaultKey={
+                  connected && publicKey ? getVaultPDA(publicKey)[0] : null
+                }
+              />
             </div>
 
             {/* Strategy Status */}
