@@ -18,6 +18,7 @@ import { VerifiedIdentities } from "./components/VerifiedIdentities";
 import { ActivityStream } from "./components/ActivityStream";
 import { CreateVaultPanel } from "./components/CreateVaultPanel";
 import { InitializeStrategyPanel } from "./components/InitializeStrategyPanel";
+import { VaultActionsPanel } from "./components/VaultActionsPanel";
 
 // ─── Main Dashboard ───────────────────────────────────────────────────
 export default function VaultDashboard() {
@@ -811,6 +812,19 @@ export default function VaultDashboard() {
                 )}
               </div>
             </div>
+
+            {/* Vault actions — MPC control panel. Only render when a
+                live vault exists AND the encrypted strategy has been
+                initialized (state_nonce > 0); before that, the user is
+                still in the CreateVault / InitializeStrategy flow. */}
+            {connected && vault && !vault.stateNonce.isZero() && publicKey && (
+              <div className="mt-6">
+                <VaultActionsPanel
+                  authority={publicKey}
+                  onRefresh={() => refetchVault()}
+                />
+              </div>
+            )}
 
             {/* Live activity — program log aesthetic */}
             <div className="mt-6">

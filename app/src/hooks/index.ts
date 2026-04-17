@@ -7,3 +7,8 @@ export { useWithdraw } from "./useWithdraw";
 export { useComputeQuotes } from "./useComputeQuotes";
 export { useTokenBalance } from "./useTokenBalance";
 export type { TokenBalance } from "./useTokenBalance";
+export { useComputeQuotesMpc } from "./useComputeQuotesMpc";
+export type { QuotesComputedPayload } from "./useComputeQuotesMpc";
+export { useUpdateStrategy } from "./useUpdateStrategy";
+export { useRevealPerformance } from "./useRevealPerformance";
+export type { PerformanceRevealedPayload } from "./useRevealPerformance";
