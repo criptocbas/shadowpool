@@ -3476,7 +3476,12 @@ dependencies = [
  "arcium-client",
  "arcium-macros",
  "pyth-solana-receiver-sdk",
+ "shadowpool-math",
 ]
+
+[[package]]
+name = "shadowpool-math"
+version = "0.1.0"
 
 [[package]]
 name = "shlex"

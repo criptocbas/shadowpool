@@ -50,22 +50,16 @@ const DISALLOWED_MINT_EXTENSIONS: &[ExtensionType] = &[
 
 /// Read and validate a Pyth Pull Oracle price update, returning
 /// `(price_micro_usd, conf_micro_usd)` normalized to the program's
-/// `TARGET_PRICE_EXPO` scale. Runs the full audit-grade checklist:
+/// `TARGET_PRICE_EXPO` scale.
 ///
-/// 1. Account ownership is enforced by Anchor (`Account<PriceUpdateV2>`).
-/// 2. `feed_id` match — enforced by the handler's account constraint
-///    AND again inside `get_price_no_older_than` as belt-and-braces.
-/// 3. Staleness — rejects any update older than `max_age_seconds`.
-/// 4. Exponent sanity — rejects values outside `[-18, 0]`.
-/// 5. Positive price — rejects `price <= 0` for spot feeds.
-/// 6. Confidence ratio — rejects `conf/|price| > MAX_CONF_BPS/10_000`.
-/// 7. Exponent normalisation — converts to `TARGET_PRICE_EXPO` using
-///    u128 checked ops (no floats).
+/// Steps 1–3 (owner, feed-id, staleness) are delegated to the Pyth
+/// SDK; steps 4–7 (exponent, positive price, confidence, normalization)
+/// are delegated to `shadowpool_math::validate_and_normalize_price`,
+/// the pure-math core that is exhaustively unit-tested, fuzz-tested,
+/// and shareable with third-party integrators.
 ///
-/// Runs steps 1–3 via the Pyth SDK, then delegates the price/exponent/
-/// confidence validation and normalisation to `validate_and_normalize_price`
-/// — split so the math is unit-testable without fabricating a signed
-/// on-chain `PriceUpdateV2`.
+/// This thin wrapper translates the `shadowpool_math::MathError` into
+/// the Anchor `ErrorCode` enum consumed by the rest of the program.
 fn read_pyth_price(
     price_update: &PriceUpdateV2,
     feed_id: &[u8; 32],
@@ -74,105 +68,18 @@ fn read_pyth_price(
     let price: Price = price_update
         .get_price_no_older_than(&Clock::get()?, max_age_seconds, feed_id)
         .map_err(|_| error!(ErrorCode::PriceFeedMismatch))?;
-    validate_and_normalize_price(price.price, price.conf, price.exponent)
+    shadowpool_math::validate_and_normalize_price(price.price, price.conf, price.exponent)
+        .map_err(math_err_to_anchor)
 }
 
-/// Pure validation + normalisation. Factored out of `read_pyth_price`
-/// so the arithmetic can be exhaustively unit-tested with fixture
-/// inputs (the on-chain SDK's `PriceUpdateV2` is hard to construct in
-/// a test context). All on-chain callers go through `read_pyth_price`
-/// which adds the SDK-level staleness + feed-id + owner checks.
-fn validate_and_normalize_price(price: i64, conf: u64, exponent: i32) -> Result<(u64, u64)> {
-    require!(
-        exponent >= MIN_PYTH_EXPONENT && exponent <= MAX_PYTH_EXPONENT,
-        ErrorCode::InvalidPriceExponent
-    );
-    require!(price > 0, ErrorCode::NegativePrice);
-
-    // Confidence check in the *native* Pyth scale — ratios are scale-
-    // invariant so there's no need to normalise first.
-    //
-    //   conf/price > MAX_CONF_BPS/10_000
-    //   <=> conf * 10_000 > price * MAX_CONF_BPS
-    let price_abs = price.unsigned_abs();
-    let lhs = (conf as u128)
-        .checked_mul(10_000u128)
-        .ok_or(ErrorCode::MathOverflow)?;
-    let rhs = (price_abs as u128)
-        .checked_mul(MAX_CONF_BPS as u128)
-        .ok_or(ErrorCode::MathOverflow)?;
-    require!(lhs <= rhs, ErrorCode::PriceTooUncertain);
-
-    // Normalise to TARGET_PRICE_EXPO via u128 checked ops.
-    //
-    // Pyth reports a value as `price * 10^exponent`. We store it as
-    // `normalized * 10^TARGET_PRICE_EXPO`. Equating:
-    //   normalized = price * 10^(exponent - TARGET_PRICE_EXPO)
-    // Let `shift = exponent - TARGET_PRICE_EXPO`:
-    //   shift > 0 → Pyth scale coarser than target → multiply.
-    //   shift < 0 → Pyth scale finer  than target → divide.
-    //   shift = 0 → identity.
-    //
-    // Worked example (SOL/USD): Pyth expo=-8, TARGET_PRICE_EXPO=-6.
-    //   shift = -8 - (-6) = -2 → divide raw by 100.
-    //   Pyth raw 15_000_000_000 ($150.00000000) ÷ 100 → 150_000_000
-    //   (micro-USD = $150.000000). Correct.
-    let shift: i32 = exponent
-        .checked_sub(TARGET_PRICE_EXPO)
-        .ok_or(ErrorCode::MathOverflow)?;
-
-    let price_u128 = price as u128;
-    let conf_u128 = conf as u128;
-
-    let (norm_price, norm_conf): (u128, u128) = if shift >= 0 {
-        let mult = 10u128
-            .checked_pow(shift as u32)
-            .ok_or(ErrorCode::MathOverflow)?;
-        (
-            price_u128.checked_mul(mult).ok_or(ErrorCode::MathOverflow)?,
-            conf_u128.checked_mul(mult).ok_or(ErrorCode::MathOverflow)?,
-        )
-    } else {
-        let div = 10u128
-            .checked_pow((-shift) as u32)
-            .ok_or(ErrorCode::MathOverflow)?;
-        (
-            price_u128.checked_div(div).ok_or(ErrorCode::MathOverflow)?,
-            conf_u128.checked_div(div).ok_or(ErrorCode::MathOverflow)?,
-        )
-    };
-
-    let price_u64: u64 = norm_price
-        .try_into()
-        .map_err(|_| error!(ErrorCode::MathOverflow))?;
-    let conf_u64: u64 = norm_conf
-        .try_into()
-        .map_err(|_| error!(ErrorCode::MathOverflow))?;
-
-    Ok((price_u64, conf_u64))
+/// Thin Anchor wrappers over the `shadowpool_math` helpers. Exposed
+/// `pub` so program-level Rust tests can call them directly.
+pub fn validate_and_normalize_price(price: i64, conf: u64, exponent: i32) -> Result<(u64, u64)> {
+    shadowpool_math::validate_and_normalize_price(price, conf, exponent)
+        .map_err(math_err_to_anchor)
 }
 
-/// Compute the expected `amount_out` for a DLMM swap given the MPC-
-/// revealed quote price and the size on the chosen side. Also enforces
-/// the size cap (`amount_in` must be within the MPC-revealed size).
-///
-/// Factored out of `execute_rebalance` so the math can be exhaustively
-/// unit-tested and fuzzed without a live DLMM program or a constructed
-/// on-chain `Vault`. Every reject path has a dedicated fixture test in
-/// `dlmm_math_tests` below.
-///
-/// Semantics:
-/// - `swap_direction == 0` (base→quote): `amount_in` is in base-raw
-///   units. Returns `amount_in * ask_price / base_scale` (quote-raw).
-///   Cap: `amount_in ≤ ask_size * base_scale`.
-/// - `swap_direction == 1` (quote→base): `amount_in` is in quote-raw
-///   units. Returns `amount_in * base_scale / bid_price` (base-raw).
-///   Cap: `amount_in / bid_price ≤ bid_size`.
-/// - Other directions: `InvalidSwapDirection`.
-///
-/// All multiplication and division goes through u128 checked ops; any
-/// overflow surfaces as `MathOverflow` rather than silently wrapping.
-fn compute_expected_amount_out(
+pub fn compute_expected_amount_out(
     swap_direction: u8,
     amount_in: u64,
     mpc_bid_price: u64,
@@ -181,70 +88,39 @@ fn compute_expected_amount_out(
     mpc_ask_size: u64,
     base_decimals: u8,
 ) -> Result<u64> {
-    let base_scale: u128 = 10u128
-        .checked_pow(base_decimals as u32)
-        .ok_or(ErrorCode::MathOverflow)?;
-
-    match swap_direction {
-        0 => {
-            // base → quote
-            let cap = (mpc_ask_size as u128)
-                .checked_mul(base_scale)
-                .ok_or(ErrorCode::MathOverflow)?;
-            require!(
-                (amount_in as u128) <= cap,
-                ErrorCode::SwapAmountExceedsMpcSize
-            );
-
-            let out = (amount_in as u128)
-                .checked_mul(mpc_ask_price as u128)
-                .ok_or(ErrorCode::MathOverflow)?
-                .checked_div(base_scale)
-                .ok_or(ErrorCode::MathOverflow)?;
-            u64::try_from(out).map_err(|_| error!(ErrorCode::MathOverflow))
-        }
-        1 => {
-            // quote → base
-            require!(mpc_bid_price > 0, ErrorCode::ZeroNavBasis);
-
-            let equivalent_base = (amount_in as u128)
-                .checked_div(mpc_bid_price as u128)
-                .ok_or(ErrorCode::MathOverflow)?;
-            require!(
-                equivalent_base <= mpc_bid_size as u128,
-                ErrorCode::SwapAmountExceedsMpcSize
-            );
-
-            let out = (amount_in as u128)
-                .checked_mul(base_scale)
-                .ok_or(ErrorCode::MathOverflow)?
-                .checked_div(mpc_bid_price as u128)
-                .ok_or(ErrorCode::MathOverflow)?;
-            u64::try_from(out).map_err(|_| error!(ErrorCode::MathOverflow))
-        }
-        _ => Err(error!(ErrorCode::InvalidSwapDirection)),
-    }
+    shadowpool_math::compute_expected_amount_out(
+        swap_direction,
+        amount_in,
+        mpc_bid_price,
+        mpc_ask_price,
+        mpc_bid_size,
+        mpc_ask_size,
+        base_decimals,
+    )
+    .map_err(math_err_to_anchor)
 }
 
-/// Compute the minimum acceptable `amount_out` given a program-derived
-/// `expected_out` and the hard slippage ceiling. Cranker-supplied
-/// `min_amount_out` must be ≥ this floor — the cranker can only
-/// *tighten* slippage, never loosen it beyond the program's cap.
+pub fn compute_safety_floor(expected_out: u64, max_slippage_bps_ceiling: u16) -> Result<u64> {
+    shadowpool_math::compute_safety_floor(expected_out, max_slippage_bps_ceiling)
+        .map_err(math_err_to_anchor)
+}
+
+/// Translate `shadowpool_math::MathError` to the program's `ErrorCode`.
 ///
-/// Floor = `expected_out * (10_000 - max_slippage_bps_ceiling) / 10_000`.
-fn compute_safety_floor(
-    expected_out: u64,
-    max_slippage_bps_ceiling: u16,
-) -> Result<u64> {
-    let safety_factor = (10_000u64)
-        .checked_sub(max_slippage_bps_ceiling as u64)
-        .ok_or(ErrorCode::MathOverflow)?;
-    let floor = (expected_out as u128)
-        .checked_mul(safety_factor as u128)
-        .ok_or(ErrorCode::MathOverflow)?
-        .checked_div(10_000u128)
-        .ok_or(ErrorCode::MathOverflow)?;
-    u64::try_from(floor).map_err(|_| error!(ErrorCode::MathOverflow))
+/// Every `MathError` has a one-to-one Anchor mapping — we are explicit
+/// about the correspondence so there's no `catch-all` variant that
+/// hides an unanticipated math error behind a generic `MathOverflow`.
+fn math_err_to_anchor(e: shadowpool_math::MathError) -> anchor_lang::error::Error {
+    use shadowpool_math::MathError;
+    match e {
+        MathError::PriceTooUncertain => error!(ErrorCode::PriceTooUncertain),
+        MathError::NegativePrice => error!(ErrorCode::NegativePrice),
+        MathError::InvalidPriceExponent => error!(ErrorCode::InvalidPriceExponent),
+        MathError::InvalidSwapDirection => error!(ErrorCode::InvalidSwapDirection),
+        MathError::ZeroBidPrice => error!(ErrorCode::ZeroNavBasis),
+        MathError::SwapAmountExceedsMpcSize => error!(ErrorCode::SwapAmountExceedsMpcSize),
+        MathError::MathOverflow => error!(ErrorCode::MathOverflow),
+    }
 }
 
 /// Rejects any mint that carries a disallowed Token-2022 extension. Legacy

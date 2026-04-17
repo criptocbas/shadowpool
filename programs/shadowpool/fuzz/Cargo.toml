@@ -1,0 +1,38 @@
+[package]
+name = "shadowpool-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Keep the fuzz crate out of the outer Anchor workspace so its nightly
+# toolchain and sanitizer flags don't leak into the program build.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+shadowpool-math = { path = "../../../crates/shadowpool-math" }
+
+[[bin]]
+name = "fuzz_validate_and_normalize_price"
+path = "fuzz_targets/fuzz_validate_and_normalize_price.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_compute_expected_amount_out"
+path = "fuzz_targets/fuzz_compute_expected_amount_out.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_compute_safety_floor"
+path = "fuzz_targets/fuzz_compute_safety_floor.rs"
+test = false
+doc = false
+bench = false

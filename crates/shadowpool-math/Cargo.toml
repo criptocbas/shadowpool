@@ -1,0 +1,12 @@
+[package]
+name = "shadowpool-math"
+version = "0.1.0"
+edition = "2021"
+description = "Pure arithmetic helpers for ShadowPool — Pyth normalization, DLMM slippage, safety floor. no_std-compatible; zero Anchor dependency so it can be fuzzed with cargo-fuzz, property-tested with proptest, and re-used by third-party integrators."
+license = "MIT"
+publish = false
+
+[lib]
+name = "shadowpool_math"
+
+[dependencies]
