@@ -8,11 +8,14 @@
     "test": "arcium test",
     "posttest": "yarn _cleanup",
     "test:clean": "arcium clean --only-accounts && arcium test",
-    "test:nuke": "rm -rf .anchor/test-ledger artifacts && arcium test"
+    "test:nuke": "rm -rf .anchor/test-ledger artifacts && arcium test",
+    "test:devnet": "PYTH_TEST=1 arcium test --cluster devnet --skip-build"
   },
   "dependencies": {
     "@arcium-hq/client": "0.9.2",
     "@coral-xyz/anchor": "^0.32.1",
+    "@pythnetwork/hermes-client": "^2.0.0",
+    "@pythnetwork/pyth-solana-receiver": "^0.10.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "1.95.8"
   },

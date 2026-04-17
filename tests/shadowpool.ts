@@ -793,24 +793,77 @@ describe("ShadowPool", () => {
    * Solana Receiver program, and return the resulting `PriceUpdateV2`
    * account pubkey ready for use by `compute_quotes`.
    *
-   * Not implemented yet — Pyth-gated tests fall through to `.skip` via
-   * `PYTH_AVAILABLE` until we wire this up. Two enabling paths:
+   * **Cluster posture:**
+   * - **Devnet:** works out of the box. Pyth Solana Receiver is
+   *   deployed at the canonical address on devnet with a live
+   *   guardian set. Run with
+   *     `yarn test:devnet`
+   *   or equivalently
+   *     `PYTH_TEST=1 source .env.local && arcium test --cluster devnet --skip-build`.
+   * - **Localnet:** requires cloning the Pyth Solana Receiver program
+   *   plus the Wormhole guardian-set accounts into the test validator
+   *   via `Anchor.toml` `[[test.validator.clone]]`. Not wired up yet;
+   *   cloning Wormhole's guardian-set plus the ephemeral VAA-posting
+   *   flow is fragile enough that we prefer `test:devnet` for the
+   *   Pyth-dependent tests during this hackathon.
    *
-   * 1. **Localnet:** add `[[test.validator.clone]]` for the Pyth
-   *    Solana Receiver program (`rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ`)
-   *    in `Anchor.toml`, then flesh this helper out with
-   *    `@pythnetwork/pyth-solana-receiver` + `@pythnetwork/hermes-client`.
-   *
-   * 2. **Devnet:** redeploy the ShadowPool program with the new layout,
-   *    then run `PYTH_TEST=1 source .env.local && arcium test
-   *    --cluster devnet --skip-build`. Pyth Solana Receiver is already
-   *    deployed on devnet at the same address as mainnet.
+   * The helper below works against whatever cluster the provider is
+   * pointed at, so once localnet cloning is added the same code runs
+   * unchanged.
    */
   async function getPythPriceUpdateAccount(feedIdHex: string): Promise<PublicKey> {
-    throw new Error(
-      `Pyth price update helper not wired. Set PYTH_TEST=0 (skip) or ` +
-      `implement getPythPriceUpdateAccount for feed ${feedIdHex}.`
+    // Lazy imports: avoid loading Pyth SDK on every test run — only when
+    // we actually need to post a price update. Keeps the localnet
+    // happy-path (PYTH_TEST unset) free of Pyth dependencies at import time.
+    const { HermesClient } = await import("@pythnetwork/hermes-client");
+    const { PythSolanaReceiver } = await import(
+      "@pythnetwork/pyth-solana-receiver"
     );
+
+    const hermes = new HermesClient("https://hermes.pyth.network/", {});
+    const feedIdPrefixed = feedIdHex.startsWith("0x")
+      ? feedIdHex
+      : `0x${feedIdHex}`;
+    const { binary } = await hermes.getLatestPriceUpdates(
+      [feedIdPrefixed],
+      { encoding: "base64" },
+    );
+
+    // Reusable `Wallet` shim for PythSolanaReceiver — it just needs
+    // something with `publicKey`, `signTransaction`, `signAllTransactions`.
+    const wallet = new anchor.Wallet(owner);
+    const pythReceiver = new PythSolanaReceiver({
+      connection: provider.connection,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      wallet: wallet as any,
+    });
+
+    const txBuilder = pythReceiver.newTransactionBuilder({
+      closeUpdateAccounts: false, // keep the account around for compute_quotes
+    });
+    await txBuilder.addPostPriceUpdates(binary.data);
+
+    // Capture the update account address from the builder's resolver
+    // before we actually send the tx.
+    let priceUpdateKey: PublicKey | null = null;
+    await txBuilder.addPriceConsumerInstructions(
+      async (getPriceUpdateAccount) => {
+        priceUpdateKey = getPriceUpdateAccount(feedIdPrefixed);
+        return []; // no consumer instruction here — caller will consume
+      },
+    );
+
+    const txs = await txBuilder.buildVersionedTransactions({
+      computeUnitPriceMicroLamports: 50_000,
+    });
+    await pythReceiver.provider.sendAll!(txs, { commitment: "confirmed" });
+
+    if (!priceUpdateKey) {
+      throw new Error(
+        `Pyth receiver builder did not resolve a PriceUpdateV2 key for ${feedIdHex}`,
+      );
+    }
+    return priceUpdateKey;
   }
 
   /** Initialize a computation definition (idempotent — skips if already exists) */
