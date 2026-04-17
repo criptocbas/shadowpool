@@ -17,6 +17,7 @@ import { MPCDivider, LockIcon } from "./components/MPCDivider";
 import { VerifiedIdentities } from "./components/VerifiedIdentities";
 import { ActivityStream } from "./components/ActivityStream";
 import { CreateVaultPanel } from "./components/CreateVaultPanel";
+import { InitializeStrategyPanel } from "./components/InitializeStrategyPanel";
 
 // ─── Main Dashboard ───────────────────────────────────────────────────
 export default function VaultDashboard() {
@@ -124,6 +125,10 @@ export default function VaultDashboard() {
 
   const isDemoMode = !connected || !vault;
   const showCreateVaultFlow = connected && !vaultLoading && !vault;
+  // Vault exists but encrypted state hasn't been initialized yet —
+  // state_nonce starts at 0 and is set by the first MPC callback.
+  const showInitializeStrategyFlow =
+    connected && !vaultLoading && vault && vault.stateNonce.isZero();
 
   // ─── Deposit / Withdraw handlers ──────────────────────────────
   // The program exposes deposit/withdraw with explicit SPL account
@@ -332,6 +337,18 @@ export default function VaultDashboard() {
         {showCreateVaultFlow && (
           <div className="px-6 md:px-10 py-6">
             <CreateVaultPanel onVaultCreated={() => refetchVault()} />
+          </div>
+        )}
+
+        {/* Vault exists but encrypted state still empty — show the
+            strategy-init CTA. Disappears as soon as state_nonce is non-zero
+            (set by the init_vault_state MPC callback). */}
+        {showInitializeStrategyFlow && publicKey && (
+          <div className="px-6 md:px-10 py-6">
+            <InitializeStrategyPanel
+              authority={publicKey}
+              onComplete={() => refetchVault()}
+            />
           </div>
         )}
 
