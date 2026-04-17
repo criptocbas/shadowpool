@@ -30,10 +30,15 @@ source .env.local && arcium test --cluster devnet --skip-build
 
 ```
 lib.rs        # declare_id! + #[arcium_program] with thin handlers (rustdoc'd).
-              # Holds two handler-side helpers:
+              # Holds three handler-side helpers:
               #   - enforce_mint_extension_allowlist (Token-2022 init-time check)
               #   - read_pyth_price / validate_and_normalize_price (Pyth Pull
               #     Oracle read + validation + exponent normalization)
+              #   - (execute_rebalance uses dlmm_cpi::swap internally)
+dlmm_cpi.rs   # Hand-rolled Meteora DLMM swap CPI. Narrower than
+              # declare_program!(dlmm) (which fails to compile due to
+              # DLMM's zero-copy account types); covers only the `swap`
+              # instruction with discriminator + account list + invoke_signed.
 constants.rs  # Comp-def offsets, ENCRYPTED_STATE_OFFSET, BPS ceilings,
               # Pyth tolerances (MAX_CONF_BPS, TARGET_PRICE_EXPO,
               # MIN/MAX_PYTH_EXPONENT)
@@ -41,15 +46,17 @@ state.rs      # #[account] Vault struct (MPC-byte-layout-sensitive!).
               # Tail-appended config fields (all below encrypted_state so
               # the offset stays at 249): cranker: Pubkey, price_feed_id:
               # [u8; 32], max_price_age_seconds: u64.
-errors.rs     # #[error_code] ErrorCode (24 variants, grouped by concern;
+errors.rs     # #[error_code] ErrorCode (29 variants, grouped by concern;
               # append-only — stable numeric codes starting at 6000)
 events.rs     # 11 #[event] structs (every event carries slot: u64,
               # including CrankerSetEvent)
-contexts.rs   # 18 #[derive(Accounts)] structs (queue / callback /
-              # init-comp-def / InitializeVault / Deposit / Withdraw /
-              # SetCranker / ExecuteRebalance). Every vault ref seed-bound
-              # to its PDA; ComputeQuotes additionally carries a
-              # Pyth PriceUpdateV2 constrained to vault.price_feed_id.
+contexts.rs   # 18 #[derive(Accounts)] structs. Every vault ref seed-bound
+              # to its PDA. ComputeQuotes carries a Pyth PriceUpdateV2
+              # constrained to vault.price_feed_id; ExecuteRebalance
+              # carries the 10 DLMM swap accounts (IDL-ordered) +
+              # bin-array remaining_accounts.
+idls/         # Vendored third-party IDLs for reproducibility.
+              #   dlmm.json — Meteora DLMM v0.8.2 (from MeteoraAg/cpi-examples).
 ```
 
 ### Arcis circuits — `encrypted-ixs/src/lib.rs` (5 circuits + unit tests)
@@ -162,6 +169,8 @@ deposit / withdraw (SPL token flow)
 
 15. **Pyth Pull Oracle integration.** `compute_quotes` reads price + conf from a `PriceUpdateV2` account supplied by the cranker. Five-layer defence: (1) Anchor enforces Pyth receiver program ownership via `Account<PriceUpdateV2>`; (2) context constraint pins `price_update.price_message.feed_id == vault.price_feed_id` — blocks wrong-asset feeds (BONK for a SOL vault); (3) SDK's `get_price_no_older_than` enforces `vault.max_price_age_seconds` + re-checks feed_id; (4) handler enforces `price > 0` (spot-only), `exponent ∈ [-18, 0]`, and `conf/|price| ≤ MAX_CONF_BPS/10_000` (1% default); (5) u128 checked-math normalization to `TARGET_PRICE_EXPO = -6` (micro-USD). No floats. `validate_and_normalize_price` is a pure function tested by 11 fixture-based Rust unit tests — the on-chain integration tests need a real `PriceUpdateV2` and are skipped on localnet unless `PYTH_TEST=1` is set with the Pyth receiver cloned into the test validator.
 
+16. **Meteora DLMM swap CPI.** `execute_rebalance` CPIs into the Meteora DLMM program (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`, same on mainnet and devnet) to execute the rebalance. The vault PDA signs the swap. Hand-rolled CPI in `src/dlmm_cpi.rs` avoids `declare_program!(dlmm)` which fails to compile against DLMM's zero-copy account types. Handler contract: `(swap_direction: u8, amount_in: u64, min_amount_out: u64, max_slippage_bps: u16)`. Five-layer validation: (1) cranker gate; (2) `lb_pair.owner == dlmm::ID`; (3) `{token_x_mint, token_y_mint}` pair matches `{vault.token_a_mint, vault.token_b_mint}` in either ordering; (4) DLMM's own internal checks; (5) MPC-anchored slippage floor — `min_amount_out ≥ expected_out * (1 - MAX_ALLOWED_SLIPPAGE_BPS/10_000)` where `expected_out` is computed from the MPC-revealed bid/ask price + base-mint decimals. Cranker can tighten slippage but never loosen beyond the 5% cap. Bin arrays pass through `ctx.remaining_accounts` (client pre-computed from `lb_pair.active_id` via Meteora TS SDK's `getBinArrayForSwap`). Pre/post-snapshot on the out-side ATA for ground-truth `amount_out` in the event.
+
 15. **Don't import `@arcium-hq/client` in client components.** Its ESM bundle imports `fs` unconditionally, which breaks `next build`. The seven PDA helpers we need (MXE / Mempool / Execpool / Cluster / Computation / CompDef / CompDefOffset) are reimplemented browser-safe in `app/src/lib/arcium-pdas.ts`. If you ever need `uploadCircuit` or similar Node-side helpers, put them in a server action, not a `"use client"` file.
 
 16. **`@coral-xyz/anchor` + `@solana/web3.js` version pin.** `web3.js@1.95.x` is what `arcium-client` expects. `web3.js@1.98+` changed the `SendTransactionError` constructor signature in an Anchor-incompatible way, producing useless "Unknown action 'undefined'" errors that mask real transient RPC failures.
@@ -180,8 +189,8 @@ deposit / withdraw (SPL token flow)
 - **Submission docs**: private `submission/` folder (gitignored, own git repo) contains founder letter, 3-min demo script, shot list, judge walkthrough, founder-market-fit doc, bio rewrite, MEV savings model, institutional scenario, competitor table, pitch deck outline, sponsor outreach drafts.
 
 ### Next priorities (Phase 1 — in order)
-1. ~~**Pyth oracle integration**~~ — ✅ shipped `de763d0` (2026-04-16). H-2 closed. Five-layer validation (owner / feed_id ×2 / staleness / sanity / u128 normalize). 11 Rust unit tests. Frontend fetches Hermes VAA and atomic-bundles with compute_quotes.
-2. **Meteora DLMM CPI skeleton in `execute_rebalance`** — at minimum swap path; LP path deferred.
+1. ~~**Pyth oracle integration**~~ — ✅ shipped `de763d0` (2026-04-16). H-2 closed.
+2. ~~**Meteora DLMM CPI in `execute_rebalance`**~~ — ✅ shipped `5a5aa57` (2026-04-16). Five-layer validation, hand-rolled CPI, MPC-anchored slippage floor, vault PDA signs. Real on-chain rebalance now works.
 3. **H-3: Pre/post reload accounting in deposit/withdraw** — credit `balance_after - balance_before` instead of the pre-fee `amount`. Closes the remaining Token-2022 transfer-fee correctness gap (the extension allow-list rejects the extension entirely today, but the pattern is the right-long-term belt-and-braces).
 4. **M-1: Single-flight MPC guard** — `pending_state_computation: Option<u64>` on the vault; reject new queues while pending. Prevents `state_nonce` races between concurrent `update_balances` / `update_strategy` calls.
 5. **M-2: Emergency NAV escape hatch** — authority-clearable `nav_stale` flag so a stuck reveal doesn't DoS deposit/withdraw indefinitely.
