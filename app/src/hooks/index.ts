@@ -16,3 +16,5 @@ export { useProgramEvents } from "./useProgramEvents";
 export type { ProgramEventRecord } from "./useProgramEvents";
 export { useVaultReadOnly } from "./useVaultReadOnly";
 export type { VaultReadOnlyData } from "./useVaultReadOnly";
+export { useEmergencyOverride } from "./useEmergencyOverride";
+export type { EmergencyOverridePhase } from "./useEmergencyOverride";

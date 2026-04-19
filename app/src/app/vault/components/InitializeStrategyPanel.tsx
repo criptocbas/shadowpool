@@ -7,6 +7,7 @@ import {
   useInitializeStrategy,
   InitializeStrategyPhase,
 } from "@/hooks/useInitializeStrategy";
+import { useEmergencyOverride } from "@/hooks/useEmergencyOverride";
 
 function phaseLabel(phase: InitializeStrategyPhase): string {
   switch (phase) {
@@ -37,6 +38,7 @@ export function InitializeStrategyPanel({
   onComplete: () => void;
 }) {
   const { initialize, phase, error } = useInitializeStrategy(authority);
+  const override = useEmergencyOverride(authority);
   const { signMessage } = useWallet();
   const [spread, setSpread] = useState(50);
   const [threshold, setThreshold] = useState(100);
@@ -220,6 +222,67 @@ export function InitializeStrategyPanel({
         no secret stored in localStorage, re-signing regenerates the same
         key for future <span style={{ color: "var(--accent-encrypted)" }}>update_strategy</span> calls.
       </p>
+
+      <div
+        className="mt-6 pt-4 border-t text-[11px] font-mono leading-relaxed"
+        style={{
+          borderColor: "var(--border-subtle)",
+          color: "var(--text-tertiary)",
+        }}
+      >
+        <div className="flex items-start gap-3 flex-wrap">
+          <div className="flex-1 min-w-[240px]">
+            <div
+              className="text-[10px] tracking-[0.2em] uppercase mb-1"
+              style={{ color: "var(--accent-danger)" }}
+            >
+              · Emergency reset
+            </div>
+            <div>
+              If the MPC cluster times out or aborts, the vault&rsquo;s
+              pending-state guard can wedge. Clears{" "}
+              <span style={{ color: "var(--accent-encrypted)" }}>
+                pending_state_computation
+              </span>{" "}
+              and{" "}
+              <span style={{ color: "var(--accent-encrypted)" }}>nav_stale</span>{" "}
+              in one authority-gated tx. Emits{" "}
+              <span style={{ color: "var(--accent-encrypted)" }}>
+                EmergencyOverrideEvent
+              </span>{" "}
+              with the previous state for audit.
+            </div>
+            {override.phase === "error" && override.error && (
+              <div
+                className="mt-2 text-[11px] break-all"
+                style={{ color: "var(--accent-danger)" }}
+              >
+                {override.error}
+              </div>
+            )}
+            {override.phase === "complete" && override.txSig && (
+              <div
+                className="mt-2 text-[11px] break-all"
+                style={{ color: "var(--accent-revealed)" }}
+              >
+                ✓ cleared · {override.txSig.slice(0, 16)}…
+              </div>
+            )}
+          </div>
+          <button
+            disabled={override.phase === "sending" || busy}
+            onClick={() => override.clear()}
+            className="px-3 py-2 text-[10px] font-mono tracking-[0.15em] uppercase rounded whitespace-nowrap transition-opacity hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{
+              background: "transparent",
+              border: "1px solid var(--accent-danger)",
+              color: "var(--accent-danger)",
+            }}
+          >
+            {override.phase === "sending" ? "Sending…" : "Emergency reset →"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

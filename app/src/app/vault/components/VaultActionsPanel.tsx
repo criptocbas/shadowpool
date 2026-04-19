@@ -7,6 +7,7 @@ import {
   useComputeQuotesMpc,
   useUpdateStrategy,
   useRevealPerformance,
+  useEmergencyOverride,
   type QuotesComputedPayload,
   type PerformanceRevealedPayload,
 } from "@/hooks";
@@ -71,6 +72,84 @@ export function VaultActionsPanel({
       <UpdateStrategyRow authority={authority} onRefresh={onRefresh} />
       <RevealPerformanceRow authority={authority} onRefresh={onRefresh} />
       <ExecuteRebalanceRow />
+      <EmergencyResetRow authority={authority} onRefresh={onRefresh} />
+    </div>
+  );
+}
+
+function EmergencyResetRow({
+  authority,
+  onRefresh,
+}: {
+  authority: PublicKey;
+  onRefresh: () => void;
+}) {
+  const override = useEmergencyOverride(authority);
+
+  const handleClick = async () => {
+    const sig = await override.clear();
+    if (sig) onRefresh();
+  };
+
+  return (
+    <div
+      className="px-5 py-3 flex items-center gap-3 flex-wrap"
+      style={{ borderTop: "1px solid var(--border-subtle)" }}
+    >
+      <div
+        className="text-[10px] font-mono tracking-[0.2em] uppercase w-7 shrink-0"
+        style={{ color: "var(--accent-danger)" }}
+      >
+        ·
+      </div>
+      <div className="flex-1 min-w-[220px]">
+        <div
+          className="text-[10px] tracking-[0.2em] uppercase"
+          style={{ color: "var(--accent-danger)" }}
+        >
+          Emergency reset
+        </div>
+        <div
+          className="text-[11px] font-mono leading-relaxed"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          Authority-gated M-2 override · clears{" "}
+          <span style={{ color: "var(--accent-encrypted)" }}>
+            pending_state_computation
+          </span>{" "}
+          and{" "}
+          <span style={{ color: "var(--accent-encrypted)" }}>nav_stale</span> if
+          an MPC callback times out.
+        </div>
+        {override.phase === "error" && override.error && (
+          <div
+            className="mt-1 text-[11px] font-mono break-all"
+            style={{ color: "var(--accent-danger)" }}
+          >
+            {override.error}
+          </div>
+        )}
+        {override.phase === "complete" && override.txSig && (
+          <div
+            className="mt-1 text-[11px] font-mono break-all"
+            style={{ color: "var(--accent-revealed)" }}
+          >
+            ✓ {override.txSig.slice(0, 16)}…
+          </div>
+        )}
+      </div>
+      <button
+        disabled={override.phase === "sending"}
+        onClick={handleClick}
+        className="px-3 py-2 text-[10px] font-mono tracking-[0.15em] uppercase rounded whitespace-nowrap transition-opacity hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+        style={{
+          background: "transparent",
+          border: "1px solid var(--accent-danger)",
+          color: "var(--accent-danger)",
+        }}
+      >
+        {override.phase === "sending" ? "Sending…" : "Reset →"}
+      </button>
     </div>
   );
 }
