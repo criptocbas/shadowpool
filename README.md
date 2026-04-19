@@ -248,7 +248,7 @@ If anything in this README doesn't match the deployed state, the code wins. Plea
 
 ## Team
 
-**Sebastián Barrientos** (`@criptocbas`) — building at the intersection of on-chain market making + privacy primitives. 18 months live MM on Solana (Backpack VIP 5, Meteora DLMM, Jupiter, Phoenix). Authored `salary-benchmark-circuits` (Arcium, March 2026). Won the Solana Privacy Hack with [HiddenHand](https://github.com/criptocbas/hiddenhand) (on-chain privacy poker, FHE + VRF + Ed25519).
+**Crypto CBas** (`@criptocbas`) — building at the intersection of on-chain market making + privacy primitives. 18 months live MM on Solana (Backpack VIP 5, Meteora DLMM, Jupiter, Phoenix). Authored `salary-benchmark-circuits` (Arcium, March 2026). Won the Solana Privacy Hack with [HiddenHand](https://github.com/criptocbas/hiddenhand) (on-chain privacy poker, FHE + VRF + Ed25519).
 
 ---
 

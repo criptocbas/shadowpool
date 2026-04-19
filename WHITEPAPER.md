@@ -2,7 +2,7 @@
 
 **Technical whitepaper · v0.1.0-alpha · 2026-04-17**
 
-**Author.** Sebastián Barrientos (`@criptocbas`). 18 months live market-making on Solana (Backpack VIP 5, Meteora DLMM, Jupiter, Phoenix). Author of [HiddenHand](https://github.com/criptocbas/hiddenhand) (Solana Privacy Hack winner, 2026) and `salary-benchmark-circuits` (Arcium, March 2026).
+**Author.** Crypto CBas (`@criptocbas`). 18 months live market-making on Solana (Backpack VIP 5, Meteora DLMM, Jupiter, Phoenix). Author of [HiddenHand](https://github.com/criptocbas/hiddenhand) (Solana Privacy Hack winner, 2026) and `salary-benchmark-circuits` (Arcium, March 2026).
 
 **Abstract.** Public on-chain strategies broadcast every parameter to the mempool the moment they're acted on. In 2025 this cost Solana LPs $720M in extracted MEV. Traditional finance solved this problem decades ago with dark pools, iceberg orders, and sealed RFQs. On Solana, until now, the primitive did not exist. ShadowPool is that primitive: a confidential execution layer that keeps strategy parameters (spread, thresholds, inventory) encrypted inside Arcium's MPC network, reveals only the resulting quotes on-chain, executes through standard DEX CPIs, and offers auditors selective disclosure without ever exposing the strategy itself. This document specifies the protocol, circuit construction, threat model, oracle integration, DEX integration, Token-2022 compatibility, and operational posture of the reference implementation shipping as an active submission to the Colosseum Frontier hackathon.
 

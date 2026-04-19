@@ -392,7 +392,7 @@ If you are an audit firm evaluating this codebase:
 - **Scope** — 20 Anchor instructions, 5 Arcis circuits, 1 hand-rolled DLMM CPI. Frontend is out of scope for program-level review (but the Pyth VAA posting flow is documented for correctness).
 - **Recommended reading order** — `README.md` → `submission/whitepaper.md` (if included) → `programs/shadowpool/src/lib.rs` → `encrypted-ixs/src/lib.rs` → `programs/shadowpool/src/contexts.rs` → `tests/shadowpool.ts`.
 - **Reproduction** — `cargo test --workspace --lib` for math; `yarn test` for on-chain flow; `arcium build` for IDL regeneration.
-- **Contact for clarifications** — [Sebastián Barrientos](mailto:sebastianbarrientosa@gmail.com), principal.
+- **Contact for clarifications** — [Crypto CBas](mailto:cbas.solana@gmail.com), principal.
 
 ---
 
