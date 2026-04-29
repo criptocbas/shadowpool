@@ -315,7 +315,7 @@ function FormRow({
       </div>
       <div
         className="mt-1 text-[9.5px] tracking-wide"
-        style={{ color: "var(--text-tertiary)", opacity: 0.6 }}
+        style={{ color: "var(--text-tertiary)", opacity: 0.9 }}
       >
         {hint}
       </div>

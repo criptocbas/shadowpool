@@ -62,7 +62,7 @@ export function VaultActionsPanel({
         <div className="flex-1" />
         <span
           className="text-[9.5px] font-mono tracking-wider"
-          style={{ color: "var(--text-tertiary)", opacity: 0.7 }}
+          style={{ color: "var(--text-tertiary)", opacity: 0.9 }}
         >
           MPC-backed
         </span>

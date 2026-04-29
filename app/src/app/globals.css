@@ -7,16 +7,16 @@
   --bg-hover: oklch(0.20 0.016 260);
 
   --text-primary: oklch(0.93 0.01 260);
-  --text-secondary: oklch(0.65 0.01 260);
-  --text-tertiary: oklch(0.45 0.01 260);
+  --text-secondary: oklch(0.74 0.01 260);
+  --text-tertiary: oklch(0.62 0.01 260);
 
   --border-subtle: oklch(0.22 0.01 260);
   --border-medium: oklch(0.30 0.012 260);
 
-  --accent-encrypted: oklch(0.55 0.12 200);
-  --accent-encrypted-dim: oklch(0.35 0.08 200);
+  --accent-encrypted: oklch(0.65 0.12 200);
+  --accent-encrypted-dim: oklch(0.58 0.10 200);
   --accent-revealed: oklch(0.72 0.15 155);
-  --accent-revealed-dim: oklch(0.45 0.08 155);
+  --accent-revealed-dim: oklch(0.58 0.10 155);
   --accent-warning: oklch(0.75 0.15 60);
   --accent-danger: oklch(0.65 0.18 25);
 
@@ -79,8 +79,11 @@ body {
 }
 
 /* ─── Encrypted hex shimmer ─── */
+/* Floor at 0.88 (not 0.7) so the labels inside stay AA-readable at the
+   trough of the pulse. Animation is still visible — the swing from 0.88
+   to 1.0 reads as a subtle breathe rather than a fade. */
 @keyframes cipher-drift {
-  0%, 100% { opacity: 0.7; }
+  0%, 100% { opacity: 0.88; }
   50% { opacity: 1; }
 }
 
@@ -340,8 +343,9 @@ body {
 }
 
 .badge-rebalanced {
-  background: var(--accent-revealed-dim);
+  background: oklch(0.20 0.04 155);
   color: var(--accent-revealed);
+  border: 1px solid oklch(0.40 0.10 155 / 0.5);
 }
 
 /* Strategy locked values */
@@ -433,7 +437,6 @@ body {
 
 .hex-dump-offset {
   color: var(--text-tertiary);
-  opacity: 0.6;
   user-select: none;
 }
 
@@ -629,7 +632,6 @@ body {
 
 .stream-log-slot {
   color: var(--text-tertiary);
-  opacity: 0.55;
 }
 
 .stream-log-event {

@@ -132,7 +132,7 @@ export function MevSavingsCounter() {
             className="ml-1"
             style={{
               color: "var(--accent-danger)",
-              opacity: 0.55,
+              opacity: 0.85,
               fontSize: "0.38em",
               verticalAlign: "baseline",
             }}

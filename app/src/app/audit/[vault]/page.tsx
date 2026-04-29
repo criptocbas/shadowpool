@@ -291,7 +291,7 @@ export default function AuditPage({ params }: Props) {
             {publicEvents.length === 0 ? (
               <div
                 className="text-[11px] font-mono italic"
-                style={{ color: "var(--text-tertiary)", opacity: 0.7 }}
+                style={{ color: "var(--text-tertiary)", opacity: 0.9 }}
               >
                 listening for events · run compute_quotes or
                 reveal_performance from the operator view to populate

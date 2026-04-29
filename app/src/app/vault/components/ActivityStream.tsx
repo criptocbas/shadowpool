@@ -76,7 +76,7 @@ export function ActivityStream({
         <span className="flex-1" />
         <span
           className="text-[9px] font-mono normal-case tracking-normal"
-          style={{ color: "var(--text-tertiary)", opacity: 0.7 }}
+          style={{ color: "var(--text-tertiary)", opacity: 0.9 }}
         >
           {isLive
             ? hasLiveEvents
@@ -96,7 +96,7 @@ export function ActivityStream({
         {isLive && !hasLiveEvents && (
           <div
             className="text-[10.5px] font-mono leading-relaxed italic"
-            style={{ color: "var(--text-tertiary)", opacity: 0.7 }}
+            style={{ color: "var(--text-tertiary)", opacity: 0.9 }}
           >
             listening for program events · try running Compute quotes or
             Reveal performance from the actions panel
@@ -128,7 +128,7 @@ export function ActivityStream({
 
       <p
         className="mt-2 text-[10px] leading-relaxed font-mono"
-        style={{ color: "var(--text-tertiary)", opacity: 0.6 }}
+        style={{ color: "var(--text-tertiary)", opacity: 0.9 }}
       >
         {isLive
           ? "live · program.addEventListener across 13 events"
