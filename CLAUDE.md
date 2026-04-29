@@ -5,7 +5,12 @@ encrypted inside Arcium's MPC network; only computed quotes are revealed
 on-chain; selective disclosure for auditors is built in.
 
 Active submission for the Colosseum Frontier hackathon (Apr 6 – May 11, 2026).
-Program deployed on **devnet** at `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`.
+Program deployed on **devnet** at `Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn`
+(cluster 456). Compiled circuit bytecode (`.arcis`) is hosted at
+[criptocbas/shadowpool-circuits](https://github.com/criptocbas/shadowpool-circuits)
+and registered with the MXE via `CircuitSource::OffChain` — the cluster
+fetches each circuit by URL on `init_comp_def`, hashes it, and rejects
+if the hash disagrees with what's baked into the program `.so`.
 
 ## Build & Test
 
@@ -23,6 +28,37 @@ Devnet runs use the Helius RPC, kept in the gitignored `.env.local`:
 ```bash
 source .env.local && arcium test --cluster devnet --skip-build
 ```
+
+**Devnet deploy + setup flow** (after a circuit or program change):
+
+```bash
+arcium build                                        # rebuilds .so + .arcis
+sed -i 's/"address": "LBUZ.*"/"address": "Cf3v..."/' \   # patch IDL gotcha #22
+  target/idl/shadowpool.json target/types/shadowpool.ts
+cd app && yarn sync-idl && cd ..                    # sync IDL into frontend
+# Push the freshly-built build/*.arcis to the circuits repo. The hash baked
+# into the .so MUST match what GitHub serves, or init_comp_def rejects.
+cp build/*.arcis ../shadowpool-circuits/ && \
+  cd ../shadowpool-circuits && git add -A && \
+  git commit -m "rebuild" && git push && cd -
+arcium deploy --keypair-path ~/.config/solana/id.json \
+  --cluster-offset 456 --recovery-set-size 4 \
+  --program-keypair target/deploy/shadowpool-keypair.json \
+  --program-name shadowpool -u "$ANCHOR_PROVIDER_URL"
+source .env.local && yarn ts-node -T scripts/setup-devnet.ts    # init 5 comp-defs
+source .env.local && yarn ts-node -T scripts/init-vault-devnet.ts  # mints + vault
+```
+
+**Version pinning is load-bearing.** Cluster 456 (devnet) runs Arcium
+**0.9.0** node binaries. Our entire stack is pinned to match — see
+gotcha #23 for the failure mode and the audit. Targets:
+
+| Component | Pin |
+|---|---|
+| `arcis` (encrypted-ixs/Cargo.toml) | `=0.9.0` |
+| `arcium-client` / `arcium-macros` / `arcium-anchor` (program/Cargo.toml) | `=0.9.0` |
+| `@arcium-hq/client` (root + app/package.json) | `0.9.0` |
+| Arcium CLI (symlink at `~/.cargo/bin/arcium`) | `arcium-0.9.0` |
 
 ## Source layout
 
@@ -169,7 +205,7 @@ deposit / withdraw (SPL token flow)
 
 4. **Zombie validators.** `arcium test` leaves `solana-test-validator` running. `package.json` pre/post hooks kill it with `pkill -9 -x solana-test-val` (15-char `comm` truncation — see the `arcium-solana-dev` skill for why `-x solana-test-validator` doesn't match). Always use `yarn test`, never bare `arcium test`.
 
-5. **`init_comp_def` takes 3 args** in v0.9.x: `init_comp_def(ctx.accounts, None, None)`. The `u32` priority param was removed.
+5. **`init_comp_def` takes 3 args** in v0.9.x: `init_comp_def(ctx.accounts, source, None)`. The `u32` priority param was removed. ShadowPool now passes `source = Some(CircuitSource::OffChain(OffChainCircuitSource { source: <raw GitHub URL>, hash: circuit_hash!("<circuit>") }))`. The macro hashes the local `build/<circuit>.arcis` at compile time; the cluster fetches the URL at init and verifies the hash. Pre-2026-04-29 we used `None` (on-chain bytecode upload via the 986-tx `scripts/upload-circuits-devnet.ts`); see gotcha #24 for why we switched.
 
 6. **`use arcis::*;`**, NOT `arcis_imports` (renamed in v0.6).
 
@@ -199,11 +235,17 @@ deposit / withdraw (SPL token flow)
 
 19. **Emergency override escape hatch (M-2).** Authority-only `emergency_override(clear_nav_stale, clear_pending_state)` instruction. Unsticks the two internal liveness flags when the MPC cluster fails to deliver a callback (DoS, aborted reveal, devnet flakiness, uninitialized comp-def). Emits `EmergencyOverrideEvent` with both booleans + the previous pending offset for forensic audit trail. Authority gate via `has_one = authority`. Safe to call with both booleans `false` (pure event emission).
 
-20. **Don't import `@arcium-hq/client` in client components.** Its ESM bundle imports `fs` unconditionally, which breaks `next build`. The seven PDA helpers we need (MXE / Mempool / Execpool / Cluster / Computation / CompDef / CompDefOffset) are reimplemented browser-safe in `app/src/lib/arcium-pdas.ts`. If you ever need `uploadCircuit` or similar Node-side helpers, put them in a server action, not a `"use client"` file.
+20. **Don't import `@arcium-hq/client` in Next.js client components — at 0.9.2.** Its 0.9.2 ESM bundle imported `fs` unconditionally, which broke `next build`. The seven PDA helpers we need (MXE / Mempool / Execpool / Cluster / Computation / CompDef / CompDefOffset) are reimplemented browser-safe in `app/src/lib/arcium-pdas.ts`. **At 0.9.0 this constraint may no longer apply** — salary-benchmark imports `@arcium-hq/client@0.9.0` directly from React/Vite browser code without issue. The wrapper still works and is in place; consider it a future cleanup candidate, but verify with a real browser build before deleting `arcium-pdas.ts`. If you ever need `uploadCircuit` or similar Node-side helpers, put them in a server action, not a `"use client"` file.
 
-21. **`@coral-xyz/anchor` + `@solana/web3.js` version pin.** `web3.js@1.95.x` is what `arcium-client` expects. `web3.js@1.98+` changed the `SendTransactionError` constructor signature in an Anchor-incompatible way, producing useless "Unknown action 'undefined'" errors that mask real transient RPC failures. **Secondary failure mode**: the same `Unknown action 'undefined'` string can also surface when a tx reverts inside the program AFTER a prior failed MPC callback left the vault with `pending_state_computation = Some(...)` — subsequent queue attempts then get rejected by the M-1 guard, and the error bubbles up through `sendAndConfirm` as `undefined`. If you see this cascade, check the vault's pending-state flag first, not web3.js.
+21. **`@coral-xyz/anchor` + `@solana/web3.js` version pin.** `web3.js@1.95.x` is what `arcium-client` expects. `web3.js@1.98+` changed the `SendTransactionError` constructor signature in an Anchor-incompatible way, producing useless "Unknown action 'undefined'" errors that mask real transient RPC failures. (An earlier note here speculated that the `undefined` string could also surface from the M-1 single-flight guard; that hypothesis turned out to be wrong — the real culprit was the 0.9.2/cluster ABI mismatch fixed in gotcha #23.) The pin: `1.95.8` for both root and app, enforced via the `resolutions` field in both `package.json`s.
 
-22. **`arcium build` corrupts `target/idl/shadowpool.json` and `target/types/shadowpool.ts` top-level `address` field** — overwrites it with the Meteora DLMM program ID (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`) during the IDL-build step, apparently because `declare_program!(dlmm)` / the vendored `idls/dlmm.json` collides with our IDL's top-level address slot. Symptom: any script that does `anchor.workspace.Shadowpool.programId` (e.g. `scripts/upload-circuits-devnet.ts`) will compute the wrong PDAs and fail with "Account does not exist or has no data" against DLMM-derived addresses. Fix: after every `arcium build`, patch the two files back to the canonical `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`. The frontend copy at `app/src/idl/shadowpool.json` is NOT affected because it's a snapshot synced via `yarn sync-idl` (app/package.json) at a known-good state — if the frontend IDL ever shows the DLMM address, that means a corrupted build got synced and both copies need to be fixed together.
+22. **`arcium build` corrupts `target/idl/shadowpool.json` and `target/types/shadowpool.ts` top-level `address` field** — overwrites it with the Meteora DLMM program ID (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`) during the IDL-build step, apparently because `declare_program!(dlmm)` / the vendored `idls/dlmm.json` collides with our IDL's top-level address slot. **Reproduces at 0.9.0 too — not a 0.9.2-only quirk.** Symptom: any script that does `anchor.workspace.Shadowpool.programId` (e.g. anything that derives PDAs from the program id) will compute the wrong PDAs and fail with "Account does not exist or has no data" against DLMM-derived addresses. Fix: after every `arcium build`, patch the two files back to the canonical `Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn` (sed one-liner shown in the Build & Test section). The frontend copy at `app/src/idl/shadowpool.json` is NOT affected because it's a snapshot synced via `yarn sync-idl` (app/package.json) at a known-good state — if the frontend IDL ever shows the DLMM address, that means a corrupted build got synced and both copies need to be fixed together.
+
+23. **Arcium stack version must match the cluster's MPC node version** (or callbacks silently fail to dispatch). Devnet cluster 456 runs **0.9.0**. We were on **0.9.2** for ~8 days and saw `create_vault_state` time out: `queue_computation` would land, MPC would compute, then nothing. `awaitComputationFinalization` returned a "success" sig — but it was Arcium's `ClaimFailure*` cleanup machinery, not our callback. The actual callback CPI was being dispatched 8× by racing nodes and **all 8 failed with `Custom(102) = InstructionDidNotDeserialize`** — Anchor's "I don't recognise this instruction discriminator" error, observable only by `getSignaturesForAddress(<computationAccount>)`. The 0.9.0 macro and the 0.9.2 macro emit different callback IXs, and the cluster's 0.9.0 dispatcher couldn't find ours. The fix was to downgrade everything: arcis / arcium-client / arcium-macros / arcium-anchor to `=0.9.0`, `@arcium-hq/client` to `0.9.0`, and the CLI symlink to `arcium-0.9.0`. Diagnostic snapshot at tag `pre-downgrade-0.9.2` (commit `9f3d1f8`); fix at commit `40b1ba5` + `d64f81c`. **Heuristic**: if a callback that "should" fire produces no event and `awaitComputationFinalization` claims success, scan signatures on the computation account before blaming the program — the failed-callback sigs tell you within seconds whether it's an ABI mismatch.
+
+24. **OffChain circuit hosting via GitHub.** All 5 `init_*_comp_def` calls pass `Some(CircuitSource::OffChain(OffChainCircuitSource { source: <raw URL>, hash: circuit_hash!("<name>") }))` (see gotcha #5). The cluster fetches the `.arcis` from `https://raw.githubusercontent.com/criptocbas/shadowpool-circuits/main/<circuit>.arcis` at init time. **Critical invariant**: the bytes at the URL must be byte-identical to `build/<circuit>.arcis` from the build that produced the deployed `.so`, because `circuit_hash!()` is computed at compile time from the local file. Any drift → `init_comp_def` rejects with hash-mismatch. Workflow: (1) `arcium build` produces `build/*.arcis`; (2) push those exact bytes to the circuits repo; (3) `arcium deploy` (the `.so` now bakes the matching hash); (4) `setup-devnet.ts` runs `init_comp_def` and the cluster verifies. The on-chain upload alternative (`scripts/upload-circuits-devnet.ts` — kept for emergency use) takes ~986 transactions per circuit set, compared to one `git push`. We adopted OffChain after the salary-benchmark pattern (`criptocbas/salary-benchmark-circuits`).
+
+25. **`awaitComputationFinalization` may return a *failed* sig.** The MPC cluster races multiple nodes to submit the same callback — the first lands, the rest get rejected with `AlreadyCallbackedComputation` (Arcium error 6204) or our own `AbortedComputation` (because `verify_output` fails when the computation account is already marked finalized). The SDK's "finalize sig" can point to any of the racers, including a failed one. **Don't parse program events from the sig the SDK returns.** Instead, scan `connection.getSignaturesForAddress(computationAccount, { limit: 25 })` and find the one with `err: null` whose tx logs contain the program event you're waiting for. Salary-benchmark's `app/src/arcium.ts::revealAverage` is a reference implementation; we'll need this pattern in the frontend's MPC hooks once they handle multi-callback flows. The `_attempt-init-devnet.ts` script gets away without it because there are explicit `awaitEvent`-style listeners on the program directly.
 
 ## Current status
 
@@ -213,8 +255,8 @@ deposit / withdraw (SPL token flow)
 - **Tests**: **9 integration tests** (6 localnet-runnable + 3 Pyth-gated via `PYTH_TEST=1`), all the localnet ones green in ~25s. **73 unit tests** (16 Arcis + 37 shadowpool-lib + 20 shadowpool-math) all green via `cargo test --workspace --lib` in ~3s. Plus **cargo-fuzz** harness with 3 targets and 266M iterations without a crash in the latest run.
 - **Typed IDL end-to-end**: `Program<Shadowpool>` everywhere, `VaultData` derived from `IdlAccounts<Shadowpool>` — no `as any` casts in hooks.
 - **Security**: NAV-aware share pricing, staleness guard, uniform `cranker` gate across the MPC rebalance pipeline (compute_quotes / update_balances / execute_rebalance), `nav_basis > 0` guard in deposit/withdraw, seed binding on every vault context, `transfer_checked`, vault init hardening (no freeze / delegate / close authority, distinct mints, Token-2022 extension allow-list), **five-layer Pyth Pull Oracle validation** on `compute_quotes` (owner / feed_id x2 / staleness / positive+exponent+conf / u128 normalization).
-- **Devnet deployed**: program live at `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g`, last upgrade slot 456227215 (2026-04-17). All 5 comp-defs **fully finalized** on cluster 456 as of 2026-04-23 — `reveal_performance` was the last pending buffer and was uploaded via `scripts/upload-circuits-devnet.ts` (986 upload txs). IDL account fresh. No legacy vaults outstanding — the pre-Phase-0 stale vault at `7L7svML23JXnFGkhKpZjTAoTaNnV6bvy7AdfYvdkQzrP` was wound down via `close_vault` during the 2026-04-23 debug session (tx `4DAdKbkFb9sz...`). `scripts/check-devnet-state.ts` prints the current on-chain state in one shot; `scripts/close-stale-vault.ts` closes whatever vault sits at the current authority's PDA (handles both legacy 468-byte and current 549-byte layouts).
-- **Known devnet blocker (open)**: MPC execution of `init_vault_state` aborts on cluster 456 in ~22-23s. Two fresh reproductions on 2026-04-21 and 2026-04-23 show the same pattern: `queue_computation` lands, MPC runs to a terminal `Failed` state, no callback event fires, encrypted state stays zero, Arcium's rent-reclaim sweepers trip `InvalidAuthority`. **Ruled out**: stuck mempool (cluster picks up work now — original Discord-reported issue from 2026-04-18 is resolved), missing circuit bytes (all 5 `OnchainFinalized`), client/CLI version drift (`@arcium-hq/client` = arcium CLI = 0.9.2), local IDL corruption (patched — see gotcha #22). **Pending**: Arcium support investigation of the node-side failure log for computation accounts `DW8tJhTzAH6QmjLzLPavrCMwKiv7iZagerphv7dPVL2a` and `FKF4rG45tmmujdA3BCXHr72WqhR3kWt8nPWDw5odMuaq`. Localnet tests (`yarn test`) remain green — this is a devnet-only blocker.
+- **Devnet deployed**: program live at `Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn` (cluster 456), fresh keypair as of 2026-04-29. MXE account initialised, address-lookup table populated, IDL account at `EEKRhtBN2jnA9UDiD8UXPk9LPnWTzteG6ytLVfbQ98uk`. All 5 comp-defs `OnchainFinalized` via `CircuitSource::OffChain` pointing at [criptocbas/shadowpool-circuits](https://github.com/criptocbas/shadowpool-circuits) — see gotcha #24 for the workflow. Canonical demo vault at `2GeboEtmKF1Ay4AtMLtitiHyCBJGQMaED8ooyCupBEeC` (encrypted_state populated, `state_nonce > 0`, `pending_state_computation = None`) — confirmed `create_vault_state` round-trip in **~4.1s** end-to-end. The previous program at `BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g` is bricked but harmless (left on-chain; nothing references it). Diagnostic ops scripts: `scripts/check-devnet-state.ts` (one-shot state dump), `scripts/setup-devnet.ts` (idempotent comp-def init), `scripts/init-vault-devnet.ts` (mints + `initialize_vault`), `scripts/_attempt-init-devnet.ts` (focused `create_vault_state` smoke test), `scripts/emergency-override-devnet.ts` (clears stuck `nav_stale` / `pending_state_computation`), `scripts/close-stale-vault.ts` (winds down legacy or current-layout vaults).
+- **Devnet blocker (resolved 2026-04-29)**: from 2026-04-18 through 2026-04-28, `create_vault_state` would queue successfully on cluster 456 but the callback never landed and `encrypted_state` stayed zero. Root cause: stack-wide 0.9.2 vs cluster-side 0.9.0 ABI mismatch — see gotcha #23 for the diagnostic and the fix. Closed by the downgrade + fresh redeploy.
 - **Frontend**: `next build` succeeds (static prerender of / and /vault). React Compiler enabled. Browser-safe Arcium PDA helpers replace the Node-dependent `@arcium-hq/client` imports. `@solana/web3.js` pinned to `1.95.8` via yarn resolution (1.98.x is Anchor-incompatible). `useQuotes` runtime-validates event shape. `useComputeQuotes` fetches a fresh Pyth VAA from Hermes, posts it via `@pythnetwork/pyth-solana-receiver` (ephemeral, rent-reclaimed), and bundles `compute_quotes` into the same atomic transaction.
 - **CI**: GitHub Actions runs `cargo check`, `cargo test --lib`, and frontend `tsc` on every push.
 - **Submission docs**: private `submission/` folder (gitignored, own git repo) contains founder letter, 3-min demo script, shot list, judge walkthrough, founder-market-fit doc, bio rewrite, MEV savings model, institutional scenario, competitor table, pitch deck outline, sponsor outreach drafts.
@@ -226,10 +268,16 @@ deposit / withdraw (SPL token flow)
 4. ~~**M-1: Single-flight MPC guard**~~ — ✅ shipped. See gotcha #18. `pending_state_computation: Option<u64>` rejects concurrent state-mutating queues; callbacks clear it regardless of success/abort.
 5. ~~**M-2: Emergency escape hatch**~~ — ✅ shipped `32e753f`. See gotcha #19. Authority-only `emergency_override(clear_nav_stale, clear_pending_state)` unsticks both liveness flags.
 6. ~~**close_vault instruction**~~ — ✅ shipped `1afc5ff`. Winds down vaults (current 549-byte layout OR legacy 468-byte via `try_deserialize` fallback), returns rent to authority.
-7. ~~**Comp-def init complete on devnet**~~ — ✅ shipped 2026-04-23. All 5 circuits `OnchainFinalized` on cluster 456 (last was `reveal_performance`).
-8. **Unblock devnet MPC execution** — waiting on Arcium support for the node-side log on the two failing computation accounts. Until resolved, end-to-end devnet demos are gated. Localnet works; `yarn test` green.
-9. **Wire deposit/withdraw on devnet via the dashboard** (hooks exist, program live) — blocked on item 8 because the first `init_vault_state` → `reveal_performance` round must complete to clear `nav_stale` before deposits accept.
-10. **Record the 3-minute demo video** per `submission/demo/script-3min.md` — can be recorded against **localnet** immediately since all tests pass there; the live-devnet version waits on item 8.
+7. ~~**Comp-def init complete on devnet**~~ — ✅ shipped 2026-04-23 (then re-shipped 2026-04-29 against the new program ID via OffChain GitHub). All 5 circuits `OnchainFinalized` on cluster 456.
+8. ~~**Unblock devnet MPC execution**~~ — ✅ resolved `d64f81c` (2026-04-29). Stack-wide downgrade to 0.9.0 + fresh program at `Cf3vfadb…RZkn` + OffChain GitHub circuit hosting. `create_vault_state` end-to-end round-trip in ~4.1s. See gotcha #23 for the autopsy.
+9. **Wire deposit/withdraw on devnet via the dashboard** (hooks exist, program live, vault initialised). Now unblocked — the first `init_vault_state` → `reveal_performance` round can complete and clear `nav_stale`. The frontend hooks need to be re-pointed at the new program ID (already done via `app/src/lib/constants.ts`), then real wallet flows tested in a browser.
+10. **Record the 3-minute demo video** per `submission/demo/script-3min.md`. Now unblocked against **live devnet** — earlier note about the localnet fallback no longer applies; record against the deployed program.
+
+### Open gotchas / housekeeping
+- **`arcium-pdas.ts` cleanup candidate** — the wrapper exists because of a 0.9.2 `fs`-import bug that may be gone at 0.9.0 (gotcha #20). Verify with a real `next build` before deleting; until then, leave in place.
+- **Frontend MPC hooks may need the gotcha #25 callback-sig-race pattern** if they listen for events parsed from the `awaitComputationFinalization` return sig. The current hooks use program `addEventListener`, which sidesteps the issue, but flows that scan a single tx's logs will need the salary-benchmark pattern.
+- **Submission docs reference the old program id** (`submission/` is gitignored, own private repo). Sweep the founder letter / demo script / pitch deck for `BEu9V…` before recording.
+- **Public-facing docs**: `README.md` (2 spots) and `WHITEPAPER.md` (1 spot) still reference the old `BEu9V…` program id. Update before sharing.
 
 ## Code patterns
 
