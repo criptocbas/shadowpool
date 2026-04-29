@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-shadowpool = "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
+shadowpool = "Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn"
 
 [programs.devnet]
-shadowpool = "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
+shadowpool = "Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn"
 
 [registry]
 url = "https://api.apr.dev"

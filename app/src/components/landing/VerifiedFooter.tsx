@@ -14,7 +14,7 @@ type Cell = {
 const CELLS: Cell[] = [
   {
     label: "ShadowPool · program",
-    value: "BEu9VWMd…g4g",
+    value: "Cf3vfadb…RZkn",
     link: "https://explorer.solana.com/address/BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g?cluster=devnet",
     tone: "encrypted",
   },

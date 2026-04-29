@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/shadowpool.json`.
  */
 export type Shadowpool = {
-  "address": "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g",
+  "address": "Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn",
   "metadata": {
     "name": "shadowpool",
     "version": "0.1.0",
@@ -796,7 +796,7 @@ export type Shadowpool = {
           "docs": [
             "DLMM program self-reference, required by emit_cpi!."
           ],
-          "address": "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
+          "address": "Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn"
         }
       ],
       "args": [

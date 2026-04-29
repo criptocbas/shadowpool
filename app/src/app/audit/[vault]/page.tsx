@@ -5,6 +5,7 @@ import { useMemo, use } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { useVaultReadOnly } from "@/hooks/useVaultReadOnly";
 import { useProgramEvents } from "@/hooks/useProgramEvents";
+import { PROGRAM_ID } from "@/lib/constants";
 
 /**
  * Auditor surface: `/audit/<vault-pubkey>`.
@@ -178,7 +179,7 @@ export default function AuditPage({ params }: Props) {
             <AddressCell label="Vault PDA" value={vaultParam} cluster="devnet" />
             <AddressCell
               label="Program"
-              value="BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
+              value={PROGRAM_ID.toBase58()}
               cluster="devnet"
             />
           </div>

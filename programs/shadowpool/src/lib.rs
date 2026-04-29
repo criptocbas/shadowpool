@@ -7,7 +7,8 @@ use anchor_spl::token_2022::spl_token_2022::{
 };
 use anchor_spl::token_interface::{self, Burn, Mint, MintTo, TransferChecked};
 use arcium_anchor::prelude::*;
-use arcium_client::idl::arcium::types::CallbackAccount;
+use arcium_client::idl::arcium::types::{CallbackAccount, CircuitSource, OffChainCircuitSource};
+use arcium_macros::circuit_hash;
 use pyth_solana_receiver_sdk::price_update::{Price, PriceUpdateV2};
 
 pub mod dlmm_cpi;
@@ -146,7 +147,7 @@ fn enforce_mint_extension_allowlist(mint: &InterfaceAccount<Mint>) -> Result<()>
     Ok(())
 }
 
-declare_id!("BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g");
+declare_id!("Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn");
 
 #[arcium_program]
 pub mod shadowpool {
@@ -165,13 +166,27 @@ pub mod shadowpool {
 
     /// Register the `init_vault_state` Arcis circuit with the MXE.
     pub fn init_vault_state_comp_def(ctx: Context<InitVaultStateCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://raw.githubusercontent.com/criptocbas/shadowpool-circuits/main/init_vault_state.arcis".to_string(),
+                hash: circuit_hash!("init_vault_state"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
     /// Register the `compute_quotes` Arcis circuit with the MXE.
     pub fn init_compute_quotes_comp_def(ctx: Context<InitComputeQuotesCompDef>) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://raw.githubusercontent.com/criptocbas/shadowpool-circuits/main/compute_quotes.arcis".to_string(),
+                hash: circuit_hash!("compute_quotes"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -179,7 +194,14 @@ pub mod shadowpool {
     pub fn init_update_balances_comp_def(
         ctx: Context<InitUpdateBalancesCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://raw.githubusercontent.com/criptocbas/shadowpool-circuits/main/update_balances.arcis".to_string(),
+                hash: circuit_hash!("update_balances"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -187,7 +209,14 @@ pub mod shadowpool {
     pub fn init_update_strategy_comp_def(
         ctx: Context<InitUpdateStrategyCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://raw.githubusercontent.com/criptocbas/shadowpool-circuits/main/update_strategy.arcis".to_string(),
+                hash: circuit_hash!("update_strategy"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 
@@ -195,7 +224,14 @@ pub mod shadowpool {
     pub fn init_reveal_performance_comp_def(
         ctx: Context<InitRevealPerformanceCompDef>,
     ) -> Result<()> {
-        init_comp_def(ctx.accounts, None, None)?;
+        init_comp_def(
+            ctx.accounts,
+            Some(CircuitSource::OffChain(OffChainCircuitSource {
+                source: "https://raw.githubusercontent.com/criptocbas/shadowpool-circuits/main/reveal_performance.arcis".to_string(),
+                hash: circuit_hash!("reveal_performance"),
+            })),
+            None,
+        )?;
         Ok(())
     }
 

@@ -1,7 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 
 export const PROGRAM_ID = new PublicKey(
-  "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
+  "Cf3vfadbcvDxaCGsdmKzaNFAVjn8ZGsB4J2rjpncRZkn"
 );
 
 export const ENCRYPTED_STATE_OFFSET = 249;
