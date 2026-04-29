@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { useConnection, useAnchorWallet } from "@solana/wallet-adapter-react";
 import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
+import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { getProgram } from "@/lib/program";
 import { getVaultPDA } from "@/lib/constants";
 
@@ -46,6 +47,7 @@ export function useWithdraw(authority: PublicKey | null) {
             vaultTokenB,
             shareMint,
             userShareAccount,
+            tokenProgram: TOKEN_PROGRAM_ID,
           })
           .rpc({ commitment: "confirmed" });
 
