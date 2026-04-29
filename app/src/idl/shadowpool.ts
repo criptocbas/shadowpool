@@ -14,6 +14,86 @@ export type Shadowpool = {
   },
   "instructions": [
     {
+      "name": "closeVault",
+      "docs": [
+        "Authority-only: close the vault PDA and return its rent",
+        "balance to the authority's wallet.",
+        "",
+        "Two paths:",
+        "",
+        "1. **Empty-vault path (normal).** If the vault account",
+        "deserializes under the current `Vault` schema, enforce",
+        "`total_shares == 0` AND `total_deposits_b == 0` before",
+        "closure — LP safety. Any outstanding position blocks close.",
+        "",
+        "2. **Legacy-layout path (rescue).** If deserialization fails",
+        "(account pre-dates the current layout), skip the",
+        "invariant check. Authority is the sole trust anchor; this",
+        "path lets operators wind down stale test or pre-upgrade",
+        "vaults without a program re-deployment cycle.",
+        "",
+        "The vault's token accounts and share mint stay intact and can",
+        "be independently closed via standard `spl-token` tooling. A",
+        "drained vault will have zero-balance token accounts that",
+        "close trivially to any owner-specified recipient.",
+        "",
+        "Emits `VaultClosedEvent` with the reclaimed lamports and a",
+        "`was_legacy_layout` flag so indexers can audit the two paths."
+      ],
+      "discriminator": [
+        141,
+        103,
+        17,
+        126,
+        72,
+        75,
+        29,
+        29
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "vault",
+          "docs": [
+            "The vault PDA to close. Unchecked so we can handle legacy-layout",
+            "accounts; the seed binding ensures authority-specific derivation,",
+            "and the handler manually verifies program ownership before any",
+            "lamport movement.",
+            "",
+            "derivation); deserialize attempted for invariant enforcement."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "computeQuotes",
       "docs": [
         "Queue the MPC computation that produces a bid/ask quote from",
@@ -716,7 +796,7 @@ export type Shadowpool = {
           "docs": [
             "DLMM program self-reference, required by emit_cpi!."
           ],
-          "address": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+          "address": "BEu9VWMdba4NumzJ3NqYtHysPtCWe1gB33SbDwZ64g4g"
         }
       ],
       "args": [
@@ -2219,6 +2299,19 @@ export type Shadowpool = {
       ]
     },
     {
+      "name": "vaultClosedEvent",
+      "discriminator": [
+        104,
+        71,
+        213,
+        247,
+        195,
+        133,
+        16,
+        106
+      ]
+    },
+    {
       "name": "vaultCreatedEvent",
       "discriminator": [
         81,
@@ -2391,26 +2484,31 @@ export type Shadowpool = {
     },
     {
       "code": 6026,
+      "name": "vaultNotEmpty",
+      "msg": "Vault is not empty — total_shares or total_deposits_b is non-zero; drain before closing"
+    },
+    {
+      "code": 6027,
       "name": "invalidSwapDirection",
       "msg": "Swap direction must be 0 (base→quote) or 1 (quote→base)"
     },
     {
-      "code": 6027,
+      "code": 6028,
       "name": "invalidDlmmPool",
       "msg": "DLMM pool account owner does not match the Meteora DLMM program"
     },
     {
-      "code": 6028,
+      "code": 6029,
       "name": "slippageFloorViolated",
       "msg": "Caller-supplied min_amount_out is below the MPC-price safety floor"
     },
     {
-      "code": 6029,
+      "code": 6030,
       "name": "swapAmountExceedsMpcSize",
       "msg": "Requested swap amount exceeds the size the MPC strategy revealed"
     },
     {
-      "code": 6030,
+      "code": 6031,
       "name": "missingBinArrays",
       "msg": "No bin arrays supplied — DLMM swap requires at least one via remaining_accounts"
     }
@@ -3927,6 +4025,40 @@ export type Shadowpool = {
             "type": {
               "option": "u64"
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "vaultClosedEvent",
+      "docs": [
+        "Emitted when `close_vault` reclaims a Vault PDA's rent back to the",
+        "authority. `was_legacy_layout = true` when the vault pre-dated the",
+        "current serialization layout (rescue path); `false` when it",
+        "deserialized cleanly and passed the empty-vault invariants."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "lamportsReturned",
+            "type": "u64"
+          },
+          {
+            "name": "wasLegacyLayout",
+            "type": "bool"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
           }
         ]
       }
